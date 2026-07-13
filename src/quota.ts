@@ -51,7 +51,7 @@ export function usagePercent(quota: ModelQuota): number {
   let remaining = quota.remainingFraction;
   if (remaining < 0) remaining = 0;
   if (remaining > 1) remaining = 1;
-  return Math.trunc((1 - remaining) * 100 + 0.5);
+  return (1 - remaining) * 100;
 }
 
 export function formatResetCountdown(reset: string, now: Date): string {

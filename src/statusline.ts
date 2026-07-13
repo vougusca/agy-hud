@@ -155,17 +155,17 @@ function renderMultiline(payload: Payload, config: Config, width: number, modelS
         usageCompact += resetSuffix(config, quota.reset);
       }
     }
-    line2 = joinHeader(`Context ${formatInt(ctxPct)}%`, usageCompact);
+    line2 = joinHeader(`Context ${formatPct(ctxPct)}%`, usageCompact);
   }
   if (visibleLen(line2) > width) {
     let coreUsage = "";
     if (quota.hasQuota) {
       coreUsage = `Use ${usageValue(config, quota.usagePct)}`;
     }
-    line2 = join(`Ctx ${formatInt(ctxPct)}%`, coreUsage);
+    line2 = join(`Ctx ${formatPct(ctxPct)}%`, coreUsage);
   }
   if (visibleLen(line2) > width) {
-    line2 = `${formatInt(ctxPct)}%`;
+    line2 = `${formatPct(ctxPct)}%`;
   }
   line2 = fit(line2, width);
   return `${line1}\n${line2}`;
@@ -199,7 +199,7 @@ function renderSingleLine(payload: Payload, config: Config, width: number, model
     [coloredBadge, ctx, usage, stateText],
     [coloredBadge, ctx, stateText],
     [ctx, stateText],
-    [`${formatInt(ctxPct)}%`, stateLabel]
+    [`${formatPct(ctxPct)}%`, stateLabel]
   ];
   for (const parts of levels) {
     const line = join(...parts);
@@ -207,7 +207,7 @@ function renderSingleLine(payload: Payload, config: Config, width: number, model
       return line;
     }
   }
-  return fit(`${formatInt(ctxPct)}% ${stateLabel}`, width);
+  return fit(`${formatPct(ctxPct)}% ${stateLabel}`, width);
 }
 
 function renderModelSegment(shortModel: string, rawPlan: string, config: Config): string {
@@ -410,25 +410,25 @@ function contextValue(config: Config, ctx: Payload["context_window"], pct: numbe
       break;
     case "both":
       if (tokens !== "") {
-        return `${formatInt(pct)}% ${tokens}`;
+        return `${formatPct(pct)}% ${tokens}`;
       }
       break;
   }
-  return `${formatInt(pct)}%`;
+  return `${formatPct(pct)}%`;
 }
 
 function contextPercent(ctx: Payload["context_window"]): number {
   const inputTokens = ctx?.total_input_tokens ?? 0;
   const windowSize = ctx?.context_window_size ?? 0;
   if (Number.isFinite(inputTokens) && Number.isFinite(windowSize) && inputTokens > 0 && windowSize > 0) {
-    return clampInt(Math.trunc((inputTokens / windowSize) * 100 + 0.5));
+    return clampFloat((inputTokens / windowSize) * 100);
   }
 
   const upstream = ctx?.used_percentage ?? 0;
   if (!Number.isFinite(upstream)) {
     return 0;
   }
-  return clampInt(Math.trunc(upstream + 0.5));
+  return clampFloat(upstream);
 }
 
 function usageLabel(config: Config, quota: QuotaDisplay, withBar: boolean): string {
@@ -452,16 +452,16 @@ function usageWindowLabel(config: Config, window: QuotaWindowDisplay, withBar: b
 
 function usageWindowValue(config: Config, usagePct: number): string {
   if (config.usageValue === "remaining") {
-    return `${formatInt(100 - usagePct)}%`;
+    return `${formatPct(100 - usagePct)}%`;
   }
-  return `${formatInt(usagePct)}%`;
+  return `${formatPct(usagePct)}%`;
 }
 
 function usageValue(config: Config, usagePct: number): string {
   if (config.usageValue === "remaining") {
-    return `${formatInt(100 - usagePct)}% left`;
+    return `${formatPct(100 - usagePct)}% left`;
   }
-  return `${formatInt(usagePct)}%`;
+  return `${formatPct(usagePct)}%`;
 }
 
 function usageBar(config: Config, usagePct: number, width = 8): string {
@@ -568,6 +568,16 @@ function clampInt(n: number): number {
   if (n < 0) return 0;
   if (n > 100) return 100;
   return n;
+}
+
+function clampFloat(n: number): number {
+  if (n < 0) return 0;
+  if (n > 100) return 100;
+  return n;
+}
+
+function formatPct(n: number): string {
+  return n.toFixed(2);
 }
 
 function formatInt(n: number): string {
