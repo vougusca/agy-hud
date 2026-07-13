@@ -154,7 +154,7 @@ function renderMultiline(payload: Payload, config: Config, width: number, modelS
   }
   line1 = fit(line1, width);
 
-  let ctx = "Context ";
+  let ctx = "Ctx ";
   if (config.showProgressBar) {
     ctx += `${progressBar(ctxPct, 10, config.color)} `;
   }
@@ -176,7 +176,7 @@ function renderMultiline(payload: Payload, config: Config, width: number, modelS
         usageNoBar += resetSuffix(config, quota.reset);
       }
     }
-    line2 = joinHeader(`Context ${contextValue(config, payload.context_window, ctxPct)}`, usageNoBar);
+    line2 = joinHeader(`Ctx ${contextValue(config, payload.context_window, ctxPct)}`, usageNoBar);
   }
   if (visibleLen(line2) > width) {
     let usageCompact = "";
@@ -186,7 +186,7 @@ function renderMultiline(payload: Payload, config: Config, width: number, modelS
         usageCompact += resetSuffix(config, quota.reset);
       }
     }
-    line2 = joinHeader(`Context ${formatPct(ctxPct)}%`, usageCompact);
+    line2 = joinHeader(`Ctx ${formatPct(ctxPct)}%`, usageCompact);
   }
   if (visibleLen(line2) > width) {
     let coreUsage = "";
@@ -464,9 +464,9 @@ function contextPercent(ctx: Payload["context_window"]): number {
 
 function usageLabel(config: Config, quota: QuotaDisplay, withBar: boolean): string {
   if (quota.windows.length > 1) {
-    return `Usage ${quota.windows.map(window => usageWindowLabel(config, window, withBar)).join(" |  ")}`;
+    return `Usg ${quota.windows.map(window => usageWindowLabel(config, window, withBar)).join(" |  ")}`;
   }
-  let label = "Usage ";
+  let label = "Usg ";
   if (withBar && config.showProgressBar) {
     label += `${usageBar(config, quota.usagePct)} `;
   }
@@ -474,11 +474,14 @@ function usageLabel(config: Config, quota: QuotaDisplay, withBar: boolean): stri
 }
 
 function usageWindowLabel(config: Config, window: QuotaWindowDisplay, withBar: boolean): string {
-  let label = "";
-  if (withBar && config.showProgressBar) {
-    label += `${usageBar(config, window.usagePct, 10)} `;
+  let text = "";
+  if (window.label !== "") {
+    text += `${window.label} `;
   }
-  return label + usageWindowValue(config, window.usagePct) + inlineResetSuffix(config, window.reset);
+  if (withBar && config.showProgressBar) {
+    text += `${usageBar(config, window.usagePct, 10)} `;
+  }
+  return text + usageWindowValue(config, window.usagePct) + inlineResetSuffix(config, window.reset);
 }
 
 function usageWindowValue(config: Config, usagePct: number): string {

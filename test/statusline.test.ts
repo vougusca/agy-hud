@@ -56,12 +56,12 @@ test("multiline default shape uses context and quota", () => {
   assert.match(lines[0], / main/);
   assert.match(lines[0], /Idle/);
   assert.doesNotMatch(lines[0], /  \|  |  │  /);
-  assert.match(lines[1], /Context/);
+  assert.match(lines[1], /Ctx/);
   assert.match(lines[1], /11.92%/);
   assert.doesNotMatch(lines[1], /  \|  |  │  /);
-  assert.match(lines[1], /Usage/);
+  assert.match(lines[1], /Usg/);
   assert.match(lines[1], /20.00% left/);
-  assert.match(lines[1], /Usage ██░░░░░░ 20.00% left ↻ Reset \d\d:\d\d/);
+  assert.match(lines[1], /Usg ██░░░░░░ 20.00% left ↻ Reset \d\d:\d\d/);
   assert.doesNotMatch(lines[1], /↻ 00:44/);
   assert.doesNotMatch(lines[1], /resets/);
   assert.doesNotMatch(lines[1], /Idle/);
@@ -81,7 +81,7 @@ test("remaining quota renders as a context-style bar from precise fraction", () 
 
   const out = strip(renderFixture(config, cache));
 
-  assert.match(out, /Usage ███████░ 84.76% left ↻ Reset \d\d:\d\d/);
+  assert.match(out, /Usg ███████░ 84.76% left ↻ Reset \d\d:\d\d/);
   assert.doesNotMatch(out, /\u2009/);
   assert.doesNotMatch(out, /↻ 02:04/);
 });
@@ -119,7 +119,7 @@ test("official quota payload renders five-hour and weekly windows over stale quo
     now: new Date("2026-06-15T03:52:00Z")
   }));
 
-  assert.match(out, /Usage ████████░░ 84.23% \(↻ 4h 29m\) \|  █████████░ 90.92% \(↻ 3d 21h\)/);
+  assert.match(out, /Usg 5h ████████░░ 84.23% \(↻ 4h 29m\) \|  W █████████░ 90.92% \(↻ 3d 21h\)/);
   assert.doesNotMatch(out, /20.00% left/);
 });
 
@@ -152,7 +152,7 @@ test("untouched official third-party quota does not override consumed active-mod
     now: new Date("2026-06-27T04:52:00Z")
   }));
 
-  assert.match(out, /Usage ███████░ 92.00% left ↻ Reset \d\d:\d\d/);
+  assert.match(out, /Usg ███████░ 92.00% left ↻ Reset \d\d:\d\d/);
   assert.doesNotMatch(out, /100.00% left/);
 });
 
@@ -184,7 +184,7 @@ test("fresh active-model cache can override stale official third-party quota wit
     now: new Date("2026-06-27T05:09:00Z")
   }));
 
-  assert.match(out, /Usage █░░░░░░░ 16.61% left ↻ Reset \d\d:\d\d/);
+  assert.match(out, /Usg █░░░░░░░ 16.61% left ↻ Reset \d\d:\d\d/);
   assert.doesNotMatch(out, /29% left/);
 });
 
@@ -211,7 +211,7 @@ test("official quota uses third-party buckets for Claude and GPT models", () => 
   }));
 
   assert.match(out, /Sonnet 4\.6/);
-  assert.match(out, /Usage ████░░░░ 48.00% left ↻ Reset \d\d:\d\d/);
+  assert.match(out, /Usg ████░░░░ 48.00% left ↻ Reset \d\d:\d\d/);
 });
 
 test("agent state can be hidden", () => {
@@ -222,9 +222,9 @@ test("agent state can be hidden", () => {
 
 test("context value formats", () => {
   const cases: Record<string, string> = {
-    percent: "Context █░░░░░░░░░ 11.92%",
-    tokens: "Context █░░░░░░░░░ 125k/1M",
-    both: "Context █░░░░░░░░░ 11.92% (125k/1M)"
+    percent: "Ctx █░░░░░░░░░ 11.92%",
+    tokens: "Ctx █░░░░░░░░░ 125k/1M",
+    both: "Ctx █░░░░░░░░░ 11.92% (125k/1M)"
   };
   for (const [value, want] of Object.entries(cases)) {
     const config = defaultConfig();
@@ -252,9 +252,9 @@ test("context percent ignores volatile output token count", () => {
     now: new Date("2026-05-19T12:00:00Z")
   }));
 
-  assert.match(out, /Context .* 6.00%/);
+  assert.match(out, /Ctx .* 6.00%/);
   assert.match(out, /\(60k\/1M\)/);
-  assert.doesNotMatch(out, /Context .* 10%/);
+  assert.doesNotMatch(out, /Ctx .* 10%/);
   assert.doesNotMatch(out, /\(100k\/1M\)/);
 });
 
@@ -270,7 +270,7 @@ test("usage value can show percent used", () => {
   const config = defaultConfig();
   config.color = false;
   config.usageValue = "percent";
-  assert.match(renderFixture(config, cache), /Usage ██████░░ 80.00% ↻ Reset \d\d:\d\d/);
+  assert.match(renderFixture(config, cache), /Usg ██████░░ 80.00% ↻ Reset \d\d:\d\d/);
   assert.doesNotMatch(renderFixture(config, cache), /↻ 00:44/);
 });
 
@@ -292,14 +292,14 @@ test("remaining usage bar color reflects used percentage", () => {
     }
   };
   const out = renderFixture(defaultConfig(), cache);
-  assert.match(out, /Usage \x1b\[33m███░░░░░\x1b\[0m/);
+  assert.match(out, /Usg \x1b\[33m███░░░░░\x1b\[0m/);
   assert.match(strip(out), /40.00% left/);
 });
 
 test("quota miss omits usage without fake limit", () => {
   const out = strip(renderFixture(defaultConfig()));
   assert.doesNotMatch(out, /Limit --/);
-  assert.doesNotMatch(out, /Usage/);
+  assert.doesNotMatch(out, /Usg/);
   assert.doesNotMatch(out, /weekly/);
 });
 
@@ -313,7 +313,7 @@ test("full remaining quota hides inactive reset countdown", () => {
     }
   };
   const out = strip(renderFixture(defaultConfig(), cache));
-  assert.match(out, /Usage/);
+  assert.match(out, /Usg/);
   assert.match(out, /100.00% left/);
   assert.doesNotMatch(out, /↻/);
   assert.doesNotMatch(out, /02:44/);
