@@ -53,16 +53,16 @@ test("renderStatusline finds git branch from workspace project dir", () => {
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), "agy-hud-"));
   fs.mkdirSync(path.join(repo, ".git"));
   fs.writeFileSync(path.join(repo, ".git", "HEAD"), "ref: refs/heads/main\n");
-  const payload = `{
-    "cwd": "agy-hud",
-    "workspace": {"project_dir": "${repo}"},
-    "model": {"display_name": "Gemini 3.5 Flash (High)"},
-    "context_window": {"used_percentage": 12},
-    "agent_state": "idle",
-    "plan_tier": "Google AI Pro",
-    "terminal_width": 120,
-    "vcs": {"type": "git"}
-  }`;
+  const payload = JSON.stringify({
+    cwd: "agy-hud",
+    workspace: { project_dir: repo },
+    model: { display_name: "Gemini 3.5 Flash (High)" },
+    context_window: { used_percentage: 12 },
+    agent_state: "idle",
+    plan_tier: "Google AI Pro",
+    terminal_width: 120,
+    vcs: { type: "git" }
+  });
 
   assert.match(strip(renderStatusline(payload, defaultConfig(), null)), / main/);
 });
@@ -293,7 +293,8 @@ test("quota cache refresh detects stale and legacy cache shapes", () => {
 test("statusline triggers immediate refresh after live conversation starts with untouched fresh cache", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-hud-"));
   const cachePath = path.join(dir, "quota_cache.json");
-  const probePath = path.join(dir, "spawn-probe.sh");
+  const isWin = process.platform === "win32";
+  const probePath = path.join(dir, isWin ? "spawn-probe.exe" : "spawn-probe.sh");
   const markerPath = path.join(dir, "spawned.txt");
   const oldCacheEnv = process.env.AGY_HUD_QUOTA_CACHE;
   const oldArgv0 = process.argv[0];
@@ -307,9 +308,23 @@ test("statusline triggers immediate refresh after live conversation starts with 
       }
     }
   }), "utf8");
-  fs.writeFileSync(probePath, `#!/bin/sh
+
+  if (isWin) {
+    const csPath = path.join(dir, "spawn-probe.cs");
+    fs.writeFileSync(csPath, `
+      using System.IO;
+      class Program {
+          static void Main(string[] args) {
+              File.AppendAllText(@"${markerPath}", string.Join(" ", args) + "\\r\\n");
+          }
+      }
+    `, "utf8");
+    require("child_process").execSync(`C:\\Windows\\Microsoft.NET\\Framework\\v4.0.30319\\csc.exe /nologo /out:"${probePath}" "${csPath}"`);
+  } else {
+    fs.writeFileSync(probePath, `#!/bin/sh
 echo "$@" >> "${markerPath}"
 `, { encoding: "utf8", mode: 0o755 });
+  }
 
   process.env.AGY_HUD_QUOTA_CACHE = cachePath;
   process.argv[0] = probePath;
@@ -348,7 +363,8 @@ echo "$@" >> "${markerPath}"
 test("statusline refreshes when active model has untouched quota in mixed cache", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-hud-"));
   const cachePath = path.join(dir, "quota_cache.json");
-  const probePath = path.join(dir, "spawn-probe.sh");
+  const isWin = process.platform === "win32";
+  const probePath = path.join(dir, isWin ? "spawn-probe.exe" : "spawn-probe.sh");
   const markerPath = path.join(dir, "spawned.txt");
   const oldCacheEnv = process.env.AGY_HUD_QUOTA_CACHE;
   const oldArgv0 = process.argv[0];
@@ -366,9 +382,23 @@ test("statusline refreshes when active model has untouched quota in mixed cache"
       }
     }
   }), "utf8");
-  fs.writeFileSync(probePath, `#!/bin/sh
+
+  if (isWin) {
+    const csPath = path.join(dir, "spawn-probe.cs");
+    fs.writeFileSync(csPath, `
+      using System.IO;
+      class Program {
+          static void Main(string[] args) {
+              File.AppendAllText(@"${markerPath}", string.Join(" ", args) + "\\r\\n");
+          }
+      }
+    `, "utf8");
+    require("child_process").execSync(`C:\\Windows\\Microsoft.NET\\Framework\\v4.0.30319\\csc.exe /nologo /out:"${probePath}" "${csPath}"`);
+  } else {
+    fs.writeFileSync(probePath, `#!/bin/sh
 echo "$@" >> "${markerPath}"
 `, { encoding: "utf8", mode: 0o755 });
+  }
 
   process.env.AGY_HUD_QUOTA_CACHE = cachePath;
   process.argv[0] = probePath;
@@ -517,7 +547,7 @@ test("statusline renders refreshed quota on the same idle transition", async () 
     });
 
     assert.equal(code, 0);
-    assert.match(strip(stdout), /3% left/);
+    assert.match(strip(stdout), /3.00% left/);
     assert.doesNotMatch(strip(stdout), /29% left/);
   } finally {
     if (oldCacheEnv === undefined) delete process.env.AGY_HUD_QUOTA_CACHE;
