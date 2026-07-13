@@ -11,6 +11,7 @@ export interface LanguageServerInfo {
 }
 
 export interface ProbeRuntime {
+  _isDefault?: boolean;
   ps(): string;
   lsof(pid: string): string;
   request(port: number, csrfToken: string): Promise<unknown | null>;
@@ -118,41 +119,79 @@ export function buildQuotaCache(rawResponse: unknown, now: Date): { cache: unkno
 }
 
 export async function refreshQuota(cachePath: string, runtime: ProbeRuntime = defaultRuntime()): Promise<RefreshResult> {
-  const psOutput = runtime.ps();
-  const languageServer = parseLanguageServerInfo(psOutput);
-  const candidates = [...parseAgyServerInfos(psOutput), ...(languageServer ? [languageServer] : [])];
-  if (candidates.length === 0) {
-    return { ok: false, message: "No running language_server or agy quota server found." };
+  const envPort = process.env.GEMINI_CLI_IDE_SERVER_PORT;
+  const envToken = process.env.GEMINI_CLI_IDE_AUTH_TOKEN || "";
+
+  if (process.platform === "win32" && !envPort) {
+    const isBackground = process.argv.includes("refresh");
+    if (!isBackground && runtime._isDefault) {
+      return { ok: false, message: "Bypassing foreground process discovery on Windows to prevent timeouts." };
+    }
   }
 
   let rawResponse: unknown | null = null;
-  let sawPort = false;
-  for (const info of candidates) {
-    let ports: number[];
+  let methodMessage = "";
+
+  if (envPort && /^\d+$/.test(envPort)) {
+    const port = Number(envPort);
     try {
-      ports = parseListeningPorts(runtime.lsof(info.pid));
+      rawResponse = await runtime.request(port, envToken);
+      if (rawResponse) {
+        methodMessage = `using GEMINI_CLI_IDE_SERVER_PORT ${port}`;
+      }
     } catch {
-      continue;
+      // ignore and fall through
     }
-    if (ports.length > 0) {
-      sawPort = true;
+  }
+
+  if (!rawResponse) {
+    let psOutput = "";
+    try {
+      psOutput = runtime.ps();
+    } catch (err) {
+      return { ok: false, message: `Failed to list processes: ${err instanceof Error ? err.message : String(err)}` };
     }
-    for (const port of ports) {
-      rawResponse = await runtime.request(port, info.csrfToken);
+    const languageServer = parseLanguageServerInfo(psOutput);
+    const candidates = [...parseAgyServerInfos(psOutput), ...(languageServer ? [languageServer] : [])];
+    if (candidates.length === 0) {
+      return { ok: false, message: "No running language_server or agy quota server found." };
+    }
+
+    let sawPort = false;
+    for (const info of candidates) {
+      let ports: number[];
+      try {
+        ports = parseListeningPorts(runtime.lsof(info.pid));
+      } catch {
+        continue;
+      }
+      if (ports.length > 0) {
+        sawPort = true;
+      }
+      for (const port of ports) {
+        try {
+          rawResponse = await runtime.request(port, info.csrfToken);
+          if (rawResponse) {
+            methodMessage = `using discovered port ${port}`;
+            break;
+          }
+        } catch {
+          // ignore and try next
+        }
+      }
       if (rawResponse) {
         break;
       }
     }
-    if (rawResponse) {
-      break;
+    if (!sawPort) {
+      return { ok: false, message: "No listening ports found on quota server." };
     }
   }
-  if (!sawPort) {
-    return { ok: false, message: "No listening ports found on quota server." };
-  }
+
   if (!rawResponse) {
     return { ok: false, message: "Failed to query GetUserStatus from all identified ports." };
   }
+
   const built = buildQuotaCache(rawResponse, runtime.now());
   if (!built) {
     return { ok: false, message: "GetUserStatus returned malformed quota data." };
@@ -161,21 +200,95 @@ export async function refreshQuota(cachePath: string, runtime: ProbeRuntime = de
   runtime.writeFile(cachePath, `${JSON.stringify(built.cache, null, 2)}\n`);
   return {
     ok: true,
-    message: `Successfully cached processed quota data to ${cachePath}`,
+    message: `Successfully cached processed quota data to ${cachePath}${methodMessage ? ` (${methodMessage})` : ""}`,
     cachePath,
     summary: built.summary
   };
 }
 
 function defaultRuntime(): ProbeRuntime {
+  const isWin = process.platform === "win32";
   return {
-    ps: () => execFileSync("ps", ["aux"], { encoding: "utf8" }),
-    lsof: (pid: string) => execFileSync("lsof", ["-nP", "-iTCP", "-a", "-p", pid], { encoding: "utf8" }),
+    _isDefault: true,
+    ps: () => {
+      if (isWin) {
+        return windowsPs();
+      }
+      return execFileSync("ps", ["aux"], { encoding: "utf8", windowsHide: true });
+    },
+    lsof: (pid: string) => {
+      if (isWin) {
+        return windowsLsof(pid);
+      }
+      return execFileSync("lsof", ["-nP", "-iTCP", "-a", "-p", pid], { encoding: "utf8", windowsHide: true });
+    },
     request: queryLanguageServer,
     now: () => new Date(),
     writeFile: (filePath: string, data: string) => fs.writeFileSync(filePath, data, "utf8"),
     mkdir: (dirPath: string) => fs.mkdirSync(dirPath, { recursive: true })
   };
+}
+
+function windowsPs(): string {
+  try {
+    const script = `Get-CimInstance Win32_Process -Filter "Name='language_server.exe' or Name='agy.exe'" | ForEach-Object { $_.ProcessId.ToString() + "` + "`t" + `" + $_.CommandLine }`;
+    const cimOut = execFileSync("powershell", ["-NoProfile", "-Command", script], { encoding: "utf8", windowsHide: true });
+    const lines: string[] = [];
+    cimOut.split(/\r?\n/).forEach(line => {
+      const parts = line.trim().split("\t");
+      if (parts.length >= 2) {
+        const pid = parts[0];
+        let cmd = parts.slice(1).join("\t").trim();
+        let exe = "";
+        let args = "";
+        if (cmd.startsWith('"')) {
+          const closingQuote = cmd.indexOf('"', 1);
+          if (closingQuote >= 0) {
+            exe = cmd.substring(1, closingQuote);
+            args = cmd.substring(closingQuote + 1);
+          } else {
+            exe = cmd.replace(/"/g, "");
+          }
+        } else {
+          const firstSpace = cmd.indexOf(" ");
+          if (firstSpace >= 0) {
+            exe = cmd.substring(0, firstSpace);
+            args = cmd.substring(firstSpace);
+          } else {
+            exe = cmd;
+          }
+        }
+        const lastSlash = Math.max(exe.lastIndexOf("/"), exe.lastIndexOf("\\"));
+        if (lastSlash >= 0) {
+          exe = exe.substring(lastSlash + 1);
+        }
+        exe = exe.replace(/\.exe/gi, "");
+        cmd = (exe + " " + args).trim().split(/\s+/).join(" ");
+        lines.push(`user ${pid} 0.0 ${cmd}`);
+      }
+    });
+    return lines.join("\n");
+  } catch {
+    return "";
+  }
+}
+
+function windowsLsof(pid: string): string {
+  try {
+    const netstat = execFileSync("netstat", ["-ano"], { encoding: "utf8", windowsHide: true });
+    const lines = netstat.split(/\r?\n/).filter(line => {
+      const trimmed = line.trim();
+      const parts = trimmed.split(/\s+/);
+      return parts.map(p => p.toUpperCase()).includes("LISTENING") && parts[parts.length - 1] === pid;
+    }).map(line => {
+      const parts = line.trim().split(/\s+/);
+      const local = parts[1] || "";
+      return `app ${pid} user 10u IPv4 0 TCP ${local} (LISTEN)`;
+    });
+    return lines.join("\n");
+  } catch (err) {
+    throw new Error(`netstat failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 async function queryLanguageServer(port: number, csrfToken: string): Promise<unknown | null> {

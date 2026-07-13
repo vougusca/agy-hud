@@ -270,3 +270,42 @@ function sampleRawStatus(label: string, remainingFraction: number): unknown {
     }
   };
 }
+
+test("refreshQuota queries env port directly without process discovery if set", async () => {
+  const oldPort = process.env.GEMINI_CLI_IDE_SERVER_PORT;
+  const oldToken = process.env.GEMINI_CLI_IDE_AUTH_TOKEN;
+  process.env.GEMINI_CLI_IDE_SERVER_PORT = "9999";
+  process.env.GEMINI_CLI_IDE_AUTH_TOKEN = "env-token";
+
+  const writes: Record<string, string> = {};
+  let psCalled = false;
+  let requestedPort: number | null = null;
+  let requestedToken: string | null = null;
+
+  try {
+    const result = await refreshQuota("/tmp/quota_cache.json", {
+      ps: () => { psCalled = true; return ""; },
+      lsof: () => "",
+      request: async (port, token) => {
+        requestedPort = port;
+        requestedToken = token;
+        return sampleRawStatus("Gemini 3.5 Flash (Medium)", 0.5);
+      },
+      now: () => new Date("2026-05-20T04:00:00Z"),
+      writeFile: (filePath, data) => { writes[filePath] = data; },
+      mkdir: () => {}
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(psCalled, false);
+    assert.equal(requestedPort, 9999);
+    assert.equal(requestedToken, "env-token");
+    assert.match(writes["/tmp/quota_cache.json"], /"remainingFraction": 0\.5/);
+  } finally {
+    if (oldPort === undefined) delete process.env.GEMINI_CLI_IDE_SERVER_PORT;
+    else process.env.GEMINI_CLI_IDE_SERVER_PORT = oldPort;
+    if (oldToken === undefined) delete process.env.GEMINI_CLI_IDE_AUTH_TOKEN;
+    else process.env.GEMINI_CLI_IDE_AUTH_TOKEN = oldToken;
+  }
+});
+
