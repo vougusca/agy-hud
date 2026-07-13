@@ -35,7 +35,7 @@ test("short model name strips Gemini and compacts tier", () => {
 
 test("combined model plan badge and no duplicate model", () => {
   const out = strip(renderFixture(defaultConfig()));
-  assert.match(out, / 3\.5 Flash Med \|  Pro/);
+  assert.match(out, /󱐋 3\.5 Flash Med \|  Pro/);
   assert.equal((out.match(/3\.5 Flash Med/g) ?? []).length, 1);
 });
 
@@ -51,8 +51,8 @@ test("multiline default shape uses context and quota", () => {
   const out = strip(renderFixture(defaultConfig(), cache));
   const lines = out.split("\n");
   assert.equal(lines.length, 2);
-  assert.match(lines[0], / 3\.5 Flash Med \|  Pro/);
-  assert.match(lines[0], / agy-hud/);
+  assert.match(lines[0], /󱐋 3\.5 Flash Med \|  Pro/);
+  assert.match(lines[0], / agy-hud/);
   assert.match(lines[0], / main/);
   assert.match(lines[0], /Idle/);
   assert.doesNotMatch(lines[0], /  \|  |  │  /);
@@ -277,8 +277,8 @@ test("usage value can show percent used", () => {
 test("header uses theme palette ANSI colors", () => {
   const out = renderFixture(defaultConfig());
   const lines = out.split("\n");
-  assert.match(lines[0], /\x1b\[34m 3\.5 Flash Med \|  Pro\x1b\[0m/);
-  assert.match(lines[0], /\x1b\[33m agy-hud\x1b\[0m/);
+  assert.match(lines[0], /\x1b\[34m󱐋 3\.5 Flash Med \|  Pro\x1b\[0m/);
+  assert.match(lines[0], /\x1b\[33m agy-hud\x1b\[0m/);
   assert.match(lines[0], /\x1b\[35m main\x1b\[0m/);
 });
 
@@ -376,7 +376,7 @@ test("icons can be disabled", () => {
   const config = defaultConfig();
   config.showIcons = false;
   const out = strip(renderFixture(config));
-  for (const icon of ["", "", "", "", "↻"]) {
+  for (const icon of ["󱐋", "", "", "", "", "", "↻"]) {
     assert.doesNotMatch(out, new RegExp(icon));
   }
   assert.match(out, /3\.5 Flash Med \| Pro/);

@@ -13,6 +13,37 @@ const colorRed = "\x1b[31m";
 const colorOrange = "\x1b[38;5;208m";
 const colorMuted = "\x1b[90m";
 
+// Nerd Font glyphs (Caskaydia Cove NF). Verified against the shipped TTF.
+const iconGoogleG = "\u{E7F0}"; // dev-google — used for the Pro plan segment
+const iconModelDefault = "\u{F02AD}"; // md-google — generic Gemini/Google fallback
+
+// Per-model status-line icons, matched on the full display name (before shortening).
+const modelIcons: Array<{ match: RegExp; icon: string }> = [
+  // Gemini Flash — reasoning effort escalates outline -> solid -> filled bolt
+  { match: /(?:gemini.*)?flash.*\(?\s*low\s*\)?/i, icon: "\u{F140C}" },    // md-lightning_bolt_outline
+  { match: /(?:gemini.*)?flash.*\(?\s*(?:med|medium)\s*\)?/i, icon: "\u{F140B}" }, // md-lightning_bolt
+  { match: /(?:gemini.*)?flash.*\(?\s*high\s*\)?/i, icon: "\u{F0241}" },   // md-flash
+  { match: /(?:gemini.*)?flash/i, icon: "\u{F140B}" },                     // md-lightning_bolt (Flash default)
+  // Gemini Pro — four-point star, outline for low, solid for high
+  { match: /(?:gemini.*)?pro.*\(?\s*low\s*\)?/i, icon: "\u{F0AE3}" },      // md-star_four_points_outline
+  { match: /(?:gemini.*)?pro.*\(?\s*high\s*\)?/i, icon: "\u{F0AE2}" },     // md-star_four_points
+  { match: /(?:gemini.*)?pro/i, icon: "\u{F0AE2}" },                       // md-star_four_points (Pro default)
+  // Claude
+  { match: /(?:claude.*)?sonnet/i, icon: "\u{EE9C}" },                     // fa-brain
+  { match: /(?:claude.*)?opus/i, icon: "\u{F1344}" },                      // md-head_lightbulb
+  // Open-source / third-party
+  { match: /gpt|oss/i, icon: "\u{F06A9}" },                           // md-robot
+];
+
+function modelIcon(modelDisplay: string): string {
+  for (const entry of modelIcons) {
+    if (entry.match.test(modelDisplay)) {
+      return entry.icon;
+    }
+  }
+  return iconModelDefault;
+}
+
 export interface Payload {
   cwd?: string;
   session_id?: string;
@@ -91,7 +122,7 @@ export function render(payload: Payload, opts: RenderOptions): string {
   const config = opts.config;
   const width = (payload.terminal_width ?? 0) <= 0 ? 80 : payload.terminal_width!;
   const modelDisplay = payload.model?.display_name || payload.model?.id || "Gemini";
-  const modelSegment = renderModelSegment(shortModelName(modelDisplay), payload.plan_tier ?? "", config);
+  const modelSegment = renderModelSegment(shortModelName(modelDisplay), modelIcon(modelDisplay), payload.plan_tier ?? "", config);
   const ctxPct = contextPercent(payload.context_window);
   const stateLabel = state(payload.agent_state ?? "");
   const quota = quotaInfo(opts.quota, modelDisplay, payload.quota, opts.now ?? new Date());
@@ -104,7 +135,7 @@ export function render(payload: Payload, opts: RenderOptions): string {
 function renderMultiline(payload: Payload, config: Config, width: number, modelSegment: string, ctxPct: number, quota: QuotaDisplay, branch: string, stateLabel: string): string {
   const line1Parts = [colorize(modelSegment, colorBlue, config.color)];
   if (config.showCWD && payload.cwd) {
-    line1Parts.push(colorize(withIcon(config, " ", "") + path.basename(payload.cwd), colorYellow, config.color));
+    line1Parts.push(colorize(withIcon(config, " ", "") + path.basename(payload.cwd), colorYellow, config.color));
   }
   if (config.showGitBranch && branch !== "") {
     line1Parts.push(colorize(renderGitSegment(branch, config), colorMagenta, config.color));
@@ -210,7 +241,7 @@ function renderSingleLine(payload: Payload, config: Config, width: number, model
   return fit(`${formatPct(ctxPct)}% ${stateLabel}`, width);
 }
 
-function renderModelSegment(shortModel: string, rawPlan: string, config: Config): string {
+function renderModelSegment(shortModel: string, icon: string, rawPlan: string, config: Config): string {
   let plan = "Plan ?";
   if (rawPlan === "Google AI Pro") {
     plan = "Pro";
@@ -218,17 +249,17 @@ function renderModelSegment(shortModel: string, rawPlan: string, config: Config)
     plan = "Free";
   }
   if (config.showModel && shortModel !== "") {
-    return `${withIcon(config, " ", "")}${shortModel} | ${renderPlan(plan, config)}`;
+    return `${withIcon(config, `${icon} `, "")}${shortModel} | ${renderPlan(plan, config)}`;
   }
   if (plan === "Pro") {
-    return `${withIcon(config, " ", "")}${renderPlan(plan, config)} Tier`;
+    return `${withIcon(config, `${icon} `, "")}${renderPlan(plan, config)} Tier`;
   }
-  return `${withIcon(config, " ", "")}${plan}`;
+  return `${withIcon(config, `${icon} `, "")}${plan}`;
 }
 
 function renderPlan(plan: string, config: Config): string {
   if (plan === "Pro") {
-    return `${withIcon(config, " ", "")}Pro`;
+    return `${withIcon(config, `${iconGoogleG} `, "")}Pro`;
   }
   return plan;
 }
