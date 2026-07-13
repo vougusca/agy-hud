@@ -646,7 +646,7 @@ function renderMultiline(payload, config, width, modelSegment, ctxPct, quota, br
     line1 = colorize(modelSegment, colorBlue, config.color);
   }
   line1 = fit(line1, width);
-  let ctx = "Context ";
+  let ctx = "Ctx ";
   if (config.showProgressBar) {
     ctx += `${progressBar(ctxPct, 10, config.color)} `;
   }
@@ -667,7 +667,7 @@ function renderMultiline(payload, config, width, modelSegment, ctxPct, quota, br
         usageNoBar += resetSuffix(config, quota.reset);
       }
     }
-    line2 = joinHeader(`Context ${contextValue(config, payload.context_window, ctxPct)}`, usageNoBar);
+    line2 = joinHeader(`Ctx ${contextValue(config, payload.context_window, ctxPct)}`, usageNoBar);
   }
   if (visibleLen(line2) > width) {
     let usageCompact = "";
@@ -677,7 +677,7 @@ function renderMultiline(payload, config, width, modelSegment, ctxPct, quota, br
         usageCompact += resetSuffix(config, quota.reset);
       }
     }
-    line2 = joinHeader(`Context ${formatPct(ctxPct)}%`, usageCompact);
+    line2 = joinHeader(`Ctx ${formatPct(ctxPct)}%`, usageCompact);
   }
   if (visibleLen(line2) > width) {
     let coreUsage = "";
@@ -934,20 +934,23 @@ function contextPercent(ctx) {
 }
 function usageLabel(config, quota, withBar) {
   if (quota.windows.length > 1) {
-    return `Usage ${quota.windows.map((window) => usageWindowLabel(config, window, withBar)).join(" |  ")}`;
+    return `${quota.windows.map((window) => usageWindowLabel(config, window, withBar)).join(" |  ")}`;
   }
-  let label = "Usage ";
+  let label = "";
   if (withBar && config.showProgressBar) {
     label += `${usageBar(config, quota.usagePct)} `;
   }
   return label + usageValue(config, quota.usagePct);
 }
 function usageWindowLabel(config, window, withBar) {
-  let label = "";
-  if (withBar && config.showProgressBar) {
-    label += `${usageBar(config, window.usagePct, 10)} `;
+  let text = "";
+  if (window.label !== "") {
+    text += `${window.label} `;
   }
-  return label + usageWindowValue(config, window.usagePct) + inlineResetSuffix(config, window.reset);
+  if (withBar && config.showProgressBar) {
+    text += `${usageBar(config, window.usagePct, 10)} `;
+  }
+  return text + usageWindowValue(config, window.usagePct) + inlineResetSuffix(config, window.reset);
 }
 function usageWindowValue(config, usagePct) {
   if (config.usageValue === "remaining") {
