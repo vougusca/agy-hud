@@ -4,7 +4,7 @@ This repository is the TypeScript source for the `agy-hud` Antigravity CLI statu
 
 ## Project Rules
 
-- Reply to the user in Chinese unless they explicitly ask otherwise.
+- Reply to the user in English.
 - Keep edits narrowly scoped to the requested change.
 - Do not commit local runtime data, probe output, caches, secrets, or agent scratch files.
 - Use `git pull --rebase` when synchronizing with a remote. Do not create merge commits.
