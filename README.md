@@ -38,7 +38,27 @@ agy plugin validate <path-to-agy-hud>
 agy plugin install <path-to-agy-hud>
 ```
 
+**Note for Antigravity 1.1+ users:** The CLI no longer automatically registers status-line hooks from `plugin.json`. After installing, you must manually point your `settings.json` (located at `~/.gemini/antigravity-cli/settings.json`) to the wrapper script.
+
+You can automate this configuration by running the included setup script:
+
+```sh
+node ~/.gemini/config/plugins/agy-hud/hooks/install-hook.js
+```
+*(On Windows, use `node %USERPROFILE%\.gemini\config\plugins\agy-hud\hooks\install-hook.js` if the `~` alias isn't available)*
+
+**Manual Setup:**
+```json
+  "statusLine": {
+    "type": "command",
+    "command": "C:\\Users\\YOUR_USER\\.gemini\\config\\plugins\\agy-hud\\hooks\\status-line.cmd",
+    "enabled": true
+  }
+```
+*(Use `hooks/status-line.sh` on macOS/Linux).*
+
 If you edit the TypeScript sources, rebuild the bundle before installing:
+
 
 ```sh
 npm ci
@@ -118,7 +138,7 @@ Display options:
 
 - `show_agent_state`: shows stdin `agent_state` such as `Idle`, `Thinking`, or `Auth`.
 - `show_icons`: shows Nerd Font icons. Set to `false` to fall back to plain text if your terminal font renders boxes.
-- `context_value`: `percent`, `tokens`, or `both`. Default is `percent`, so context shows current input-side window occupancy. When token totals are available, the percentage and bar are derived from `total_input_tokens / context_window_size` so a large latest response does not make the HUD jump.
+- `context_value`: `percent`, `tokens`, or `both`. Default is `percent`, so context shows current input-side window occupancy. When token totals are available, the percentage and bar are derived from `total_input_tokens / context_window_size` so a large latest response does not make the HUD jump. `tokens` shows `125k/1M` (used and window size).
 - `usage_value`: `remaining` or `percent`. Default is `remaining`, so quota text and bar show what is left. When Antigravity provides both windows, the HUD shows them separately with per-window reset durations, for example `Usage ████████░░ 82% (↻ 1h 52m) |  █░░░░░░░░░ 13% (↻ 4d 21h)`.
 
 ## Quota Cache
