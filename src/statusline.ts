@@ -464,9 +464,9 @@ function contextPercent(ctx: Payload["context_window"]): number {
 
 function usageLabel(config: Config, quota: QuotaDisplay, withBar: boolean): string {
   if (quota.windows.length > 1) {
-    return `Usg ${quota.windows.map(window => usageWindowLabel(config, window, withBar)).join(" |  ")}`;
+    return `${quota.windows.map(window => usageWindowLabel(config, window, withBar)).join(" |  ")}`;
   }
-  let label = "Usg ";
+  let label = "";
   if (withBar && config.showProgressBar) {
     label += `${usageBar(config, quota.usagePct)} `;
   }
