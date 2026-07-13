@@ -131,7 +131,7 @@ function usagePercent(quota) {
   let remaining = quota.remainingFraction;
   if (remaining < 0) remaining = 0;
   if (remaining > 1) remaining = 1;
-  return Math.trunc((1 - remaining) * 100 + 0.5);
+  return (1 - remaining) * 100;
 }
 function normalize(input) {
   let out = input.toLowerCase();
@@ -233,36 +233,66 @@ function buildQuotaCache(rawResponse, now) {
   return { cache, summary: lines.join("\n") };
 }
 async function refreshQuota(cachePath, runtime = defaultRuntime()) {
-  const psOutput = runtime.ps();
-  const languageServer = parseLanguageServerInfo(psOutput);
-  const candidates = [...parseAgyServerInfos(psOutput), ...languageServer ? [languageServer] : []];
-  if (candidates.length === 0) {
-    return { ok: false, message: "No running language_server or agy quota server found." };
+  const envPort = process.env.GEMINI_CLI_IDE_SERVER_PORT;
+  const envToken = process.env.GEMINI_CLI_IDE_AUTH_TOKEN || "";
+  if (process.platform === "win32" && !envPort) {
+    const isBackground = process.argv.includes("refresh");
+    if (!isBackground && runtime._isDefault) {
+      return { ok: false, message: "Bypassing foreground process discovery on Windows to prevent timeouts." };
+    }
   }
   let rawResponse = null;
-  let sawPort = false;
-  for (const info of candidates) {
-    let ports;
+  let methodMessage = "";
+  if (envPort && /^\d+$/.test(envPort)) {
+    const port = Number(envPort);
     try {
-      ports = parseListeningPorts(runtime.lsof(info.pid));
+      rawResponse = await runtime.request(port, envToken);
+      if (rawResponse) {
+        methodMessage = `using GEMINI_CLI_IDE_SERVER_PORT ${port}`;
+      }
     } catch {
-      continue;
     }
-    if (ports.length > 0) {
-      sawPort = true;
+  }
+  if (!rawResponse) {
+    let psOutput = "";
+    try {
+      psOutput = runtime.ps();
+    } catch (err) {
+      return { ok: false, message: `Failed to list processes: ${err instanceof Error ? err.message : String(err)}` };
     }
-    for (const port of ports) {
-      rawResponse = await runtime.request(port, info.csrfToken);
+    const languageServer = parseLanguageServerInfo(psOutput);
+    const candidates = [...parseAgyServerInfos(psOutput), ...languageServer ? [languageServer] : []];
+    if (candidates.length === 0) {
+      return { ok: false, message: "No running language_server or agy quota server found." };
+    }
+    let sawPort = false;
+    for (const info of candidates) {
+      let ports;
+      try {
+        ports = parseListeningPorts(runtime.lsof(info.pid));
+      } catch {
+        continue;
+      }
+      if (ports.length > 0) {
+        sawPort = true;
+      }
+      for (const port of ports) {
+        try {
+          rawResponse = await runtime.request(port, info.csrfToken);
+          if (rawResponse) {
+            methodMessage = `using discovered port ${port}`;
+            break;
+          }
+        } catch {
+        }
+      }
       if (rawResponse) {
         break;
       }
     }
-    if (rawResponse) {
-      break;
+    if (!sawPort) {
+      return { ok: false, message: "No listening ports found on quota server." };
     }
-  }
-  if (!sawPort) {
-    return { ok: false, message: "No listening ports found on quota server." };
   }
   if (!rawResponse) {
     return { ok: false, message: "Failed to query GetUserStatus from all identified ports." };
@@ -276,20 +306,92 @@ async function refreshQuota(cachePath, runtime = defaultRuntime()) {
 `);
   return {
     ok: true,
-    message: `Successfully cached processed quota data to ${cachePath}`,
+    message: `Successfully cached processed quota data to ${cachePath}${methodMessage ? ` (${methodMessage})` : ""}`,
     cachePath,
     summary: built.summary
   };
 }
 function defaultRuntime() {
+  const isWin = process.platform === "win32";
   return {
-    ps: () => (0, import_node_child_process.execFileSync)("ps", ["aux"], { encoding: "utf8" }),
-    lsof: (pid) => (0, import_node_child_process.execFileSync)("lsof", ["-nP", "-iTCP", "-a", "-p", pid], { encoding: "utf8" }),
+    _isDefault: true,
+    ps: () => {
+      if (isWin) {
+        return windowsPs();
+      }
+      return (0, import_node_child_process.execFileSync)("ps", ["aux"], { encoding: "utf8", windowsHide: true });
+    },
+    lsof: (pid) => {
+      if (isWin) {
+        return windowsLsof(pid);
+      }
+      return (0, import_node_child_process.execFileSync)("lsof", ["-nP", "-iTCP", "-a", "-p", pid], { encoding: "utf8", windowsHide: true });
+    },
     request: queryLanguageServer,
     now: () => /* @__PURE__ */ new Date(),
     writeFile: (filePath, data) => import_node_fs3.default.writeFileSync(filePath, data, "utf8"),
     mkdir: (dirPath) => import_node_fs3.default.mkdirSync(dirPath, { recursive: true })
   };
+}
+function windowsPs() {
+  try {
+    const script = `Get-CimInstance Win32_Process -Filter "Name='language_server.exe' or Name='agy.exe'" | ForEach-Object { $_.ProcessId.ToString() + "\`t" + $_.CommandLine }`;
+    const cimOut = (0, import_node_child_process.execFileSync)("powershell", ["-NoProfile", "-Command", script], { encoding: "utf8", windowsHide: true });
+    const lines = [];
+    cimOut.split(/\r?\n/).forEach((line) => {
+      const parts = line.trim().split("	");
+      if (parts.length >= 2) {
+        const pid = parts[0];
+        let cmd = parts.slice(1).join("	").trim();
+        let exe = "";
+        let args = "";
+        if (cmd.startsWith('"')) {
+          const closingQuote = cmd.indexOf('"', 1);
+          if (closingQuote >= 0) {
+            exe = cmd.substring(1, closingQuote);
+            args = cmd.substring(closingQuote + 1);
+          } else {
+            exe = cmd.replace(/"/g, "");
+          }
+        } else {
+          const firstSpace = cmd.indexOf(" ");
+          if (firstSpace >= 0) {
+            exe = cmd.substring(0, firstSpace);
+            args = cmd.substring(firstSpace);
+          } else {
+            exe = cmd;
+          }
+        }
+        const lastSlash = Math.max(exe.lastIndexOf("/"), exe.lastIndexOf("\\"));
+        if (lastSlash >= 0) {
+          exe = exe.substring(lastSlash + 1);
+        }
+        exe = exe.replace(/\.exe/gi, "");
+        cmd = (exe + " " + args).trim().split(/\s+/).join(" ");
+        lines.push(`user ${pid} 0.0 ${cmd}`);
+      }
+    });
+    return lines.join("\n");
+  } catch {
+    return "";
+  }
+}
+function windowsLsof(pid) {
+  try {
+    const netstat = (0, import_node_child_process.execFileSync)("netstat", ["-ano"], { encoding: "utf8", windowsHide: true });
+    const lines = netstat.split(/\r?\n/).filter((line) => {
+      const trimmed = line.trim();
+      const parts = trimmed.split(/\s+/);
+      return parts.map((p) => p.toUpperCase()).includes("LISTENING") && parts[parts.length - 1] === pid;
+    }).map((line) => {
+      const parts = line.trim().split(/\s+/);
+      const local = parts[1] || "";
+      return `app ${pid} user 10u IPv4 0 TCP ${local} (LISTEN)`;
+    });
+    return lines.join("\n");
+  } catch (err) {
+    throw new Error(`netstat failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 async function queryLanguageServer(port, csrfToken) {
   const endpoint = `/exa.language_server_pb.LanguageServerService/GetUserStatus`;
@@ -539,17 +641,17 @@ function renderMultiline(payload, config, width, modelSegment, ctxPct, quota, br
         usageCompact += resetSuffix(config, quota.reset);
       }
     }
-    line2 = joinHeader(`Context ${formatInt(ctxPct)}%`, usageCompact);
+    line2 = joinHeader(`Context ${formatPct(ctxPct)}%`, usageCompact);
   }
   if (visibleLen(line2) > width) {
     let coreUsage = "";
     if (quota.hasQuota) {
       coreUsage = `Use ${usageValue(config, quota.usagePct)}`;
     }
-    line2 = join(`Ctx ${formatInt(ctxPct)}%`, coreUsage);
+    line2 = join(`Ctx ${formatPct(ctxPct)}%`, coreUsage);
   }
   if (visibleLen(line2) > width) {
-    line2 = `${formatInt(ctxPct)}%`;
+    line2 = `${formatPct(ctxPct)}%`;
   }
   line2 = fit(line2, width);
   return `${line1}
@@ -583,7 +685,7 @@ function renderSingleLine(payload, config, width, modelSegment, ctxPct, quota, s
     [coloredBadge, ctx, usage2, stateText],
     [coloredBadge, ctx, stateText],
     [ctx, stateText],
-    [`${formatInt(ctxPct)}%`, stateLabel]
+    [`${formatPct(ctxPct)}%`, stateLabel]
   ];
   for (const parts of levels) {
     const line = join(...parts);
@@ -591,7 +693,7 @@ function renderSingleLine(payload, config, width, modelSegment, ctxPct, quota, s
       return line;
     }
   }
-  return fit(`${formatInt(ctxPct)}% ${stateLabel}`, width);
+  return fit(`${formatPct(ctxPct)}% ${stateLabel}`, width);
 }
 function renderModelSegment(shortModel, rawPlan, config) {
   let plan = "Plan ?";
@@ -776,23 +878,23 @@ function contextValue(config, ctx, pct) {
       break;
     case "both":
       if (tokens !== "") {
-        return `${formatInt(pct)}% ${tokens}`;
+        return `${formatPct(pct)}% ${tokens}`;
       }
       break;
   }
-  return `${formatInt(pct)}%`;
+  return `${formatPct(pct)}%`;
 }
 function contextPercent(ctx) {
   const inputTokens = ctx?.total_input_tokens ?? 0;
   const windowSize = ctx?.context_window_size ?? 0;
   if (Number.isFinite(inputTokens) && Number.isFinite(windowSize) && inputTokens > 0 && windowSize > 0) {
-    return clampInt(Math.trunc(inputTokens / windowSize * 100 + 0.5));
+    return clampFloat(inputTokens / windowSize * 100);
   }
   const upstream = ctx?.used_percentage ?? 0;
   if (!Number.isFinite(upstream)) {
     return 0;
   }
-  return clampInt(Math.trunc(upstream + 0.5));
+  return clampFloat(upstream);
 }
 function usageLabel(config, quota, withBar) {
   if (quota.windows.length > 1) {
@@ -813,15 +915,15 @@ function usageWindowLabel(config, window, withBar) {
 }
 function usageWindowValue(config, usagePct) {
   if (config.usageValue === "remaining") {
-    return `${formatInt(100 - usagePct)}%`;
+    return `${formatPct(100 - usagePct)}%`;
   }
-  return `${formatInt(usagePct)}%`;
+  return `${formatPct(usagePct)}%`;
 }
 function usageValue(config, usagePct) {
   if (config.usageValue === "remaining") {
-    return `${formatInt(100 - usagePct)}% left`;
+    return `${formatPct(100 - usagePct)}% left`;
   }
-  return `${formatInt(usagePct)}%`;
+  return `${formatPct(usagePct)}%`;
 }
 function usageBar(config, usagePct, width = 8) {
   const fillPct = config.usageValue === "remaining" ? 100 - usagePct : usagePct;
@@ -915,6 +1017,14 @@ function clampInt(n) {
   if (n < 0) return 0;
   if (n > 100) return 100;
   return n;
+}
+function clampFloat(n) {
+  if (n < 0) return 0;
+  if (n > 100) return 100;
+  return n;
+}
+function formatPct(n) {
+  return n.toFixed(2);
 }
 function formatInt(n) {
   return Math.trunc(n).toString(10);
