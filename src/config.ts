@@ -12,6 +12,8 @@ export interface Config {
   contextValue: string;
   usageValue: string;
   debug: boolean;
+  modelColorTheme: "brand" | "neon" | "pastel" | "custom";
+  customModelColors: Record<string, string>;
 }
 
 export function defaultConfig(): Config {
@@ -26,7 +28,9 @@ export function defaultConfig(): Config {
     showIcons: true,
     contextValue: "percent",
     usageValue: "remaining",
-    debug: false
+    debug: false,
+    modelColorTheme: "brand",
+    customModelColors: {}
   };
 }
 
@@ -59,5 +63,9 @@ function merge(base: Config, patch: Record<string, unknown>): Config {
   if (typeof patch.context_value === "string" && patch.context_value !== "") base.contextValue = patch.context_value;
   if (typeof patch.usage_value === "string" && patch.usage_value !== "") base.usageValue = patch.usage_value;
   if (typeof patch.debug === "boolean") base.debug = patch.debug;
+  if (typeof patch.model_color_theme === "string") base.modelColorTheme = patch.model_color_theme as any;
+  if (typeof patch.custom_model_colors === "object" && patch.custom_model_colors !== null) {
+    base.customModelColors = patch.custom_model_colors as Record<string, string>;
+  }
   return base;
 }

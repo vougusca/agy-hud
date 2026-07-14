@@ -12,6 +12,55 @@ const colorMagenta = "\x1b[35m";
 const colorRed = "\x1b[31m";
 const colorOrange = "\x1b[38;5;208m";
 const colorMuted = "\x1b[90m";
+const colorGit = "\x1b[38;5;109m";
+
+function hexToAnsi(hex: string): string {
+  const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+  if (!result) return colorBlue;
+  const r = parseInt(result[1], 16);
+  const g = parseInt(result[2], 16);
+  const b = parseInt(result[3], 16);
+  return `\x1b[38;2;${r};${g};${b}m`;
+}
+
+const modelThemes = {
+  brand: {
+    flash: colorCyan,
+    pro: colorMagenta,
+    claude: colorOrange,
+    gpt: colorGreen
+  },
+  neon: {
+    flash: "\x1b[38;5;226m",
+    pro: "\x1b[38;5;206m",
+    claude: "\x1b[38;5;214m",
+    gpt: "\x1b[38;5;46m"
+  },
+  pastel: {
+    flash: "\x1b[38;5;117m",
+    pro: "\x1b[38;5;183m",
+    claude: "\x1b[38;5;223m",
+    gpt: "\x1b[38;5;120m"
+  }
+};
+
+function resolveModelColor(modelDisplay: string, config: Config): string {
+  const normalized = modelDisplay.toLowerCase();
+  let key: keyof typeof modelThemes["brand"] | "" = "";
+  if (normalized.includes("flash")) key = "flash";
+  else if (normalized.includes("pro")) key = "pro";
+  else if (normalized.includes("claude")) key = "claude";
+  else if (normalized.includes("gpt")) key = "gpt";
+  
+  if (!key) return colorBlue;
+
+  if (config.modelColorTheme === "custom" && config.customModelColors && config.customModelColors[key]) {
+    return hexToAnsi(config.customModelColors[key]);
+  }
+
+  const theme = modelThemes[config.modelColorTheme === "custom" ? "brand" : config.modelColorTheme] || modelThemes.brand;
+  return theme[key] || colorBlue;
+}
 
 // Nerd Font glyphs (Caskaydia Cove NF). Verified against the shipped TTF.
 const iconGoogleG = "\u{E7F0}"; // dev-google — used for the Pro plan segment
@@ -122,7 +171,8 @@ export function render(payload: Payload, opts: RenderOptions): string {
   const config = opts.config;
   const width = (payload.terminal_width ?? 0) <= 0 ? 80 : payload.terminal_width!;
   const modelDisplay = payload.model?.display_name || payload.model?.id || "Gemini";
-  const modelSegment = renderModelSegment(shortModelName(modelDisplay), modelIcon(modelDisplay), payload.plan_tier ?? "", config);
+  const mColor = resolveModelColor(modelDisplay, config);
+  const modelSegment = renderModelSegment(shortModelName(modelDisplay), modelIcon(modelDisplay), payload.plan_tier ?? "", config, mColor);
   const ctxPct = contextPercent(payload.context_window);
   const stateLabel = state(payload.agent_state ?? "");
   const quota = quotaInfo(opts.quota, modelDisplay, payload.quota, opts.now ?? new Date());
@@ -133,24 +183,24 @@ export function render(payload: Payload, opts: RenderOptions): string {
 }
 
 function renderMultiline(payload: Payload, config: Config, width: number, modelSegment: string, ctxPct: number, quota: QuotaDisplay, branch: string, stateLabel: string): string {
-  const line1Parts = [colorize(modelSegment, colorBlue, config.color)];
+  const line1Parts = [modelSegment];
   if (config.showCWD && payload.cwd) {
     line1Parts.push(colorize(withIcon(config, " ", "") + path.basename(payload.cwd), colorYellow, config.color));
   }
   if (config.showGitBranch && branch !== "") {
-    line1Parts.push(colorize(renderGitSegment(branch, config), colorMagenta, config.color));
+    line1Parts.push(colorize(renderGitSegment(branch, config), colorGit, config.color));
   }
   const stateText = config.showAgentState ? colorize(stateLabel, stateColor(stateLabel), config.color) : "";
   line1Parts.push(stateText);
   let line1 = joinHeader(...line1Parts);
   if (visibleLen(line1) > width) {
-    line1 = joinHeader(colorize(modelSegment, colorBlue, config.color), colorize(renderGitSegment(branch, config), colorMagenta, config.color), stateText);
+    line1 = joinHeader(modelSegment, colorize(renderGitSegment(branch, config), colorGit, config.color), stateText);
   }
   if (visibleLen(line1) > width) {
-    line1 = joinHeader(colorize(modelSegment, colorBlue, config.color), stateText);
+    line1 = joinHeader(modelSegment, stateText);
   }
   if (visibleLen(line1) > width) {
-    line1 = colorize(modelSegment, colorBlue, config.color);
+    line1 = modelSegment;
   }
   line1 = fit(line1, width);
 
@@ -186,24 +236,24 @@ function renderMultiline(payload: Payload, config: Config, width: number, modelS
         usageCompact += resetSuffix(config, quota.reset);
       }
     }
-    line2 = joinHeader(`Ctx ${formatPct(ctxPct)}%`, usageCompact);
+    line2 = joinHeader(`Ctx ${coloredPct(ctxPct, ctxPct, config)}`, usageCompact);
   }
   if (visibleLen(line2) > width) {
     let coreUsage = "";
     if (quota.hasQuota) {
       coreUsage = `Use ${usageValue(config, quota.usagePct)}`;
     }
-    line2 = join(`Ctx ${formatPct(ctxPct)}%`, coreUsage);
+    line2 = join(`Ctx ${coloredPct(ctxPct, ctxPct, config)}`, coreUsage);
   }
   if (visibleLen(line2) > width) {
-    line2 = `${formatPct(ctxPct)}%`;
+    line2 = coloredPct(ctxPct, ctxPct, config);
   }
   line2 = fit(line2, width);
   return `${line1}\n${line2}`;
 }
 
 function renderSingleLine(payload: Payload, config: Config, width: number, modelSegment: string, ctxPct: number, quota: QuotaDisplay, stateLabel: string): string {
-  const coloredBadge = colorize(modelSegment, colorBlue, config.color);
+  const coloredBadge = modelSegment;
   const ctx = `Ctx ${contextValue(config, payload.context_window, ctxPct)}`;
   let tokens = tokenDetail(payload.context_window);
   if (tokens !== "" && config.contextValue === "percent") {
@@ -217,7 +267,7 @@ function renderSingleLine(payload: Payload, config: Config, width: number, model
     if (quota.windows.length <= 1 && quota.reset !== "") {
       text += resetSuffix(config, quota.reset);
     }
-    usage = colorize(text, colorMuted, config.color);
+    usage = text; // Rely on internal colorization for warnings
   }
   const stateText = config.showAgentState ? colorize(stateLabel, stateColor(stateLabel), config.color) : "";
   let bar = "";
@@ -230,7 +280,7 @@ function renderSingleLine(payload: Payload, config: Config, width: number, model
     [coloredBadge, ctx, usage, stateText],
     [coloredBadge, ctx, stateText],
     [ctx, stateText],
-    [`${formatPct(ctxPct)}%`, stateLabel]
+    [coloredPct(ctxPct, ctxPct, config), stateLabel]
   ];
   for (const parts of levels) {
     const line = join(...parts);
@@ -238,10 +288,10 @@ function renderSingleLine(payload: Payload, config: Config, width: number, model
       return line;
     }
   }
-  return fit(`${formatPct(ctxPct)}% ${stateLabel}`, width);
+  return fit(`${coloredPct(ctxPct, ctxPct, config)} ${stateLabel}`, width);
 }
 
-function renderModelSegment(shortModel: string, icon: string, rawPlan: string, config: Config): string {
+function renderModelSegment(shortModel: string, icon: string, rawPlan: string, config: Config, mColor: string): string {
   let plan = "Plan ?";
   if (rawPlan === "Google AI Pro") {
     plan = "Pro";
@@ -249,12 +299,13 @@ function renderModelSegment(shortModel: string, icon: string, rawPlan: string, c
     plan = "Free";
   }
   if (config.showModel && shortModel !== "") {
-    return `${withIcon(config, `${icon} `, "")}${shortModel} | ${renderPlan(plan, config)}`;
+    const modelStr = `${withIcon(config, `${icon} `, "")}${shortModel}`;
+    return `${colorize(modelStr, mColor, config.color)} ${colorize(`| ${renderPlan(plan, config)}`, colorBlue, config.color)}`;
   }
   if (plan === "Pro") {
-    return `${withIcon(config, `${icon} `, "")}${renderPlan(plan, config)} Tier`;
+    return colorize(`${withIcon(config, `${icon} `, "")}${renderPlan(plan, config)} Tier`, colorBlue, config.color);
   }
-  return `${withIcon(config, `${icon} `, "")}${plan}`;
+  return colorize(`${withIcon(config, `${icon} `, "")}${plan}`, colorBlue, config.color);
 }
 
 function renderPlan(plan: string, config: Config): string {
@@ -441,11 +492,11 @@ function contextValue(config: Config, ctx: Payload["context_window"], pct: numbe
       break;
     case "both":
       if (tokens !== "") {
-        return `${formatPct(pct)}% ${tokens}`;
+        return `${coloredPct(pct, pct, config)} ${tokens}`;
       }
       break;
   }
-  return `${formatPct(pct)}%`;
+  return coloredPct(pct, pct, config);
 }
 
 function contextPercent(ctx: Payload["context_window"]): number {
@@ -486,16 +537,16 @@ function usageWindowLabel(config: Config, window: QuotaWindowDisplay, withBar: b
 
 function usageWindowValue(config: Config, usagePct: number): string {
   if (config.usageValue === "remaining") {
-    return `${formatPct(100 - usagePct)}%`;
+    return coloredPct(100 - usagePct, usagePct, config);
   }
-  return `${formatPct(usagePct)}%`;
+  return coloredPct(usagePct, usagePct, config);
 }
 
 function usageValue(config: Config, usagePct: number): string {
   if (config.usageValue === "remaining") {
-    return `${formatPct(100 - usagePct)}% left`;
+    return `${coloredPct(100 - usagePct, usagePct, config)} left`;
   }
-  return `${formatPct(usagePct)}%`;
+  return coloredPct(usagePct, usagePct, config);
 }
 
 function usageBar(config: Config, usagePct: number, width = 8): string {
@@ -529,10 +580,16 @@ function progressBar(pct: number, width: number, color: boolean): string {
   return progressBarWithColor(pct, pct, width, color);
 }
 
-function progressBarWithColor(fillPct: number, colorPct: number, width: number, color: boolean): string {
+export function progressBarWithColor(fillPct: number, colorPct: number, width: number, color: boolean): string {
   fillPct = clampInt(fillPct);
   colorPct = clampInt(colorPct);
   let filled = Math.trunc((fillPct / 100) * width + 0.5);
+  if (filled === width && fillPct < 100) {
+    filled = width - 1;
+  }
+  if (filled === 0 && fillPct > 0) {
+    filled = 1;
+  }
   if (filled < 0) filled = 0;
   if (filled > width) filled = width;
   const bar = `${"█".repeat(filled)}${"░".repeat(width - filled)}`;
@@ -542,7 +599,7 @@ function progressBarWithColor(fillPct: number, colorPct: number, width: number, 
   return colorize(bar, percentageColor(colorPct), true);
 }
 
-function percentageColor(pct: number): string {
+export function percentageColor(pct: number): string {
   if (pct >= 90) return colorRed;
   if (pct >= 75) return colorOrange;
   if (pct >= 50) return colorYellow;
@@ -598,16 +655,20 @@ function fit(input: string, width: number): string {
   return Array.from(strip(input)).slice(0, width).join("");
 }
 
-function clampInt(n: number): number {
+export function clampInt(n: number): number {
   if (n < 0) return 0;
   if (n > 100) return 100;
   return n;
 }
 
-function clampFloat(n: number): number {
+export function clampFloat(n: number): number {
   if (n < 0) return 0;
   if (n > 100) return 100;
   return n;
+}
+
+function coloredPct(pct: number, colorPct: number, config: Config): string {
+  return colorize(`${formatPct(pct)}%`, percentageColor(colorPct), config.color);
 }
 
 function formatPct(n: number): string {

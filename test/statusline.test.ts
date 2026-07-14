@@ -11,8 +11,8 @@ function fixturePayload(): Payload {
   return JSON.parse(fs.readFileSync(path.join(__dirname, "..", "..", "testdata", "statusline_payload.json"), "utf8"));
 }
 
-function renderFixture(config: Config, cache: Cache | null = null): string {
-  return render(fixturePayload(), {
+function renderFixture(config: Config, cache: Cache | null = null, payload: Payload | null = null): string {
+  return render(payload ?? fixturePayload(), {
     config,
     quota: cache,
     gitBranch: "main",
@@ -277,9 +277,9 @@ test("usage value can show percent used", () => {
 test("header uses theme palette ANSI colors", () => {
   const out = renderFixture(defaultConfig());
   const lines = out.split("\n");
-  assert.match(lines[0], /\x1b\[34m󱐋 3\.5 Flash Med \|  Pro\x1b\[0m/);
+  assert.match(lines[0], /\x1b\[36m󱐋 3\.5 Flash Med\x1b\[0m \x1b\[34m\|  Pro\x1b\[0m/);
   assert.match(lines[0], /\x1b\[33m agy-hud\x1b\[0m/);
-  assert.match(lines[0], /\x1b\[35m main\x1b\[0m/);
+  assert.match(lines[0], /\x1b\[38;5;109m main\x1b\[0m/);
 });
 
 test("remaining usage bar color reflects used percentage", () => {
@@ -293,7 +293,18 @@ test("remaining usage bar color reflects used percentage", () => {
   };
   const out = renderFixture(defaultConfig(), cache);
   assert.match(out, /\x1b\[33m███░░░░░\x1b\[0m/);
+  assert.match(out, /\x1b\[33m40\.00%\x1b\[0m left/);
   assert.match(strip(out), /40.00% left/);
+});
+
+test("context percentage text color reflects usage", () => {
+  const payload = fixturePayload();
+  payload.context_window = {
+    total_input_tokens: 95,
+    context_window_size: 100
+  };
+  const out = renderFixture(defaultConfig(), null, payload);
+  assert.match(out, /\x1b\[31m95\.00%\x1b\[0m/);
 });
 
 test("quota miss omits usage without fake limit", () => {

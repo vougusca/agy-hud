@@ -58,7 +58,9 @@ function defaultConfig() {
     showIcons: true,
     contextValue: "percent",
     usageValue: "remaining",
-    debug: false
+    debug: false,
+    modelColorTheme: "brand",
+    customModelColors: {}
   };
 }
 function loadFromPaths(paths) {
@@ -89,6 +91,10 @@ function merge(base, patch) {
   if (typeof patch.context_value === "string" && patch.context_value !== "") base.contextValue = patch.context_value;
   if (typeof patch.usage_value === "string" && patch.usage_value !== "") base.usageValue = patch.usage_value;
   if (typeof patch.debug === "boolean") base.debug = patch.debug;
+  if (typeof patch.model_color_theme === "string") base.modelColorTheme = patch.model_color_theme;
+  if (typeof patch.custom_model_colors === "object" && patch.custom_model_colors !== null) {
+    base.customModelColors = patch.custom_model_colors;
+  }
   return base;
 }
 
@@ -562,6 +568,49 @@ var colorMagenta = "\x1B[35m";
 var colorRed = "\x1B[31m";
 var colorOrange = "\x1B[38;5;208m";
 var colorMuted = "\x1B[90m";
+var colorGit = "\x1B[38;5;109m";
+function hexToAnsi(hex) {
+  const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+  if (!result) return colorBlue;
+  const r = parseInt(result[1], 16);
+  const g = parseInt(result[2], 16);
+  const b = parseInt(result[3], 16);
+  return `\x1B[38;2;${r};${g};${b}m`;
+}
+var modelThemes = {
+  brand: {
+    flash: colorCyan,
+    pro: colorMagenta,
+    claude: colorOrange,
+    gpt: colorGreen
+  },
+  neon: {
+    flash: "\x1B[38;5;226m",
+    pro: "\x1B[38;5;206m",
+    claude: "\x1B[38;5;214m",
+    gpt: "\x1B[38;5;46m"
+  },
+  pastel: {
+    flash: "\x1B[38;5;117m",
+    pro: "\x1B[38;5;183m",
+    claude: "\x1B[38;5;223m",
+    gpt: "\x1B[38;5;120m"
+  }
+};
+function resolveModelColor(modelDisplay, config) {
+  const normalized = modelDisplay.toLowerCase();
+  let key = "";
+  if (normalized.includes("flash")) key = "flash";
+  else if (normalized.includes("pro")) key = "pro";
+  else if (normalized.includes("claude")) key = "claude";
+  else if (normalized.includes("gpt")) key = "gpt";
+  if (!key) return colorBlue;
+  if (config.modelColorTheme === "custom" && config.customModelColors && config.customModelColors[key]) {
+    return hexToAnsi(config.customModelColors[key]);
+  }
+  const theme = modelThemes[config.modelColorTheme === "custom" ? "brand" : config.modelColorTheme] || modelThemes.brand;
+  return theme[key] || colorBlue;
+}
 var iconGoogleG = "\uE7F0";
 var iconModelDefault = "\u{F02AD}";
 var modelIcons = [
@@ -616,7 +665,8 @@ function render(payload, opts) {
   const config = opts.config;
   const width = (payload.terminal_width ?? 0) <= 0 ? 80 : payload.terminal_width;
   const modelDisplay = payload.model?.display_name || payload.model?.id || "Gemini";
-  const modelSegment = renderModelSegment(shortModelName(modelDisplay), modelIcon(modelDisplay), payload.plan_tier ?? "", config);
+  const mColor = resolveModelColor(modelDisplay, config);
+  const modelSegment = renderModelSegment(shortModelName(modelDisplay), modelIcon(modelDisplay), payload.plan_tier ?? "", config, mColor);
   const ctxPct = contextPercent(payload.context_window);
   const stateLabel = state(payload.agent_state ?? "");
   const quota = quotaInfo(opts.quota, modelDisplay, payload.quota, opts.now ?? /* @__PURE__ */ new Date());
@@ -626,24 +676,24 @@ function render(payload, opts) {
   return renderSingleLine(payload, config, width, modelSegment, ctxPct, quota, stateLabel);
 }
 function renderMultiline(payload, config, width, modelSegment, ctxPct, quota, branch2, stateLabel) {
-  const line1Parts = [colorize(modelSegment, colorBlue, config.color)];
+  const line1Parts = [modelSegment];
   if (config.showCWD && payload.cwd) {
     line1Parts.push(colorize(withIcon(config, " ", "") + import_node_path3.default.basename(payload.cwd), colorYellow, config.color));
   }
   if (config.showGitBranch && branch2 !== "") {
-    line1Parts.push(colorize(renderGitSegment(branch2, config), colorMagenta, config.color));
+    line1Parts.push(colorize(renderGitSegment(branch2, config), colorGit, config.color));
   }
   const stateText = config.showAgentState ? colorize(stateLabel, stateColor(stateLabel), config.color) : "";
   line1Parts.push(stateText);
   let line1 = joinHeader(...line1Parts);
   if (visibleLen(line1) > width) {
-    line1 = joinHeader(colorize(modelSegment, colorBlue, config.color), colorize(renderGitSegment(branch2, config), colorMagenta, config.color), stateText);
+    line1 = joinHeader(modelSegment, colorize(renderGitSegment(branch2, config), colorGit, config.color), stateText);
   }
   if (visibleLen(line1) > width) {
-    line1 = joinHeader(colorize(modelSegment, colorBlue, config.color), stateText);
+    line1 = joinHeader(modelSegment, stateText);
   }
   if (visibleLen(line1) > width) {
-    line1 = colorize(modelSegment, colorBlue, config.color);
+    line1 = modelSegment;
   }
   line1 = fit(line1, width);
   let ctx = "Ctx ";
@@ -677,24 +727,24 @@ function renderMultiline(payload, config, width, modelSegment, ctxPct, quota, br
         usageCompact += resetSuffix(config, quota.reset);
       }
     }
-    line2 = joinHeader(`Ctx ${formatPct(ctxPct)}%`, usageCompact);
+    line2 = joinHeader(`Ctx ${coloredPct(ctxPct, ctxPct, config)}`, usageCompact);
   }
   if (visibleLen(line2) > width) {
     let coreUsage = "";
     if (quota.hasQuota) {
       coreUsage = `Use ${usageValue(config, quota.usagePct)}`;
     }
-    line2 = join(`Ctx ${formatPct(ctxPct)}%`, coreUsage);
+    line2 = join(`Ctx ${coloredPct(ctxPct, ctxPct, config)}`, coreUsage);
   }
   if (visibleLen(line2) > width) {
-    line2 = `${formatPct(ctxPct)}%`;
+    line2 = coloredPct(ctxPct, ctxPct, config);
   }
   line2 = fit(line2, width);
   return `${line1}
 ${line2}`;
 }
 function renderSingleLine(payload, config, width, modelSegment, ctxPct, quota, stateLabel) {
-  const coloredBadge = colorize(modelSegment, colorBlue, config.color);
+  const coloredBadge = modelSegment;
   const ctx = `Ctx ${contextValue(config, payload.context_window, ctxPct)}`;
   let tokens = tokenDetail(payload.context_window);
   if (tokens !== "" && config.contextValue === "percent") {
@@ -708,7 +758,7 @@ function renderSingleLine(payload, config, width, modelSegment, ctxPct, quota, s
     if (quota.windows.length <= 1 && quota.reset !== "") {
       text += resetSuffix(config, quota.reset);
     }
-    usage2 = colorize(text, colorMuted, config.color);
+    usage2 = text;
   }
   const stateText = config.showAgentState ? colorize(stateLabel, stateColor(stateLabel), config.color) : "";
   let bar = "";
@@ -721,7 +771,7 @@ function renderSingleLine(payload, config, width, modelSegment, ctxPct, quota, s
     [coloredBadge, ctx, usage2, stateText],
     [coloredBadge, ctx, stateText],
     [ctx, stateText],
-    [`${formatPct(ctxPct)}%`, stateLabel]
+    [coloredPct(ctxPct, ctxPct, config), stateLabel]
   ];
   for (const parts of levels) {
     const line = join(...parts);
@@ -729,9 +779,9 @@ function renderSingleLine(payload, config, width, modelSegment, ctxPct, quota, s
       return line;
     }
   }
-  return fit(`${formatPct(ctxPct)}% ${stateLabel}`, width);
+  return fit(`${coloredPct(ctxPct, ctxPct, config)} ${stateLabel}`, width);
 }
-function renderModelSegment(shortModel, icon, rawPlan, config) {
+function renderModelSegment(shortModel, icon, rawPlan, config, mColor) {
   let plan = "Plan ?";
   if (rawPlan === "Google AI Pro") {
     plan = "Pro";
@@ -739,12 +789,13 @@ function renderModelSegment(shortModel, icon, rawPlan, config) {
     plan = "Free";
   }
   if (config.showModel && shortModel !== "") {
-    return `${withIcon(config, `${icon} `, "")}${shortModel} | ${renderPlan(plan, config)}`;
+    const modelStr = `${withIcon(config, `${icon} `, "")}${shortModel}`;
+    return `${colorize(modelStr, mColor, config.color)} ${colorize(`| ${renderPlan(plan, config)}`, colorBlue, config.color)}`;
   }
   if (plan === "Pro") {
-    return `${withIcon(config, `${icon} `, "")}${renderPlan(plan, config)} Tier`;
+    return colorize(`${withIcon(config, `${icon} `, "")}${renderPlan(plan, config)} Tier`, colorBlue, config.color);
   }
-  return `${withIcon(config, `${icon} `, "")}${plan}`;
+  return colorize(`${withIcon(config, `${icon} `, "")}${plan}`, colorBlue, config.color);
 }
 function renderPlan(plan, config) {
   if (plan === "Pro") {
@@ -914,11 +965,11 @@ function contextValue(config, ctx, pct) {
       break;
     case "both":
       if (tokens !== "") {
-        return `${formatPct(pct)}% ${tokens}`;
+        return `${coloredPct(pct, pct, config)} ${tokens}`;
       }
       break;
   }
-  return `${formatPct(pct)}%`;
+  return coloredPct(pct, pct, config);
 }
 function contextPercent(ctx) {
   const inputTokens = ctx?.total_input_tokens ?? 0;
@@ -954,15 +1005,15 @@ function usageWindowLabel(config, window, withBar) {
 }
 function usageWindowValue(config, usagePct) {
   if (config.usageValue === "remaining") {
-    return `${formatPct(100 - usagePct)}%`;
+    return coloredPct(100 - usagePct, usagePct, config);
   }
-  return `${formatPct(usagePct)}%`;
+  return coloredPct(usagePct, usagePct, config);
 }
 function usageValue(config, usagePct) {
   if (config.usageValue === "remaining") {
-    return `${formatPct(100 - usagePct)}% left`;
+    return `${coloredPct(100 - usagePct, usagePct, config)} left`;
   }
-  return `${formatPct(usagePct)}%`;
+  return coloredPct(usagePct, usagePct, config);
 }
 function usageBar(config, usagePct, width = 8) {
   const fillPct = config.usageValue === "remaining" ? 100 - usagePct : usagePct;
@@ -995,6 +1046,12 @@ function progressBarWithColor(fillPct, colorPct, width, color) {
   fillPct = clampInt(fillPct);
   colorPct = clampInt(colorPct);
   let filled = Math.trunc(fillPct / 100 * width + 0.5);
+  if (filled === width && fillPct < 100) {
+    filled = width - 1;
+  }
+  if (filled === 0 && fillPct > 0) {
+    filled = 1;
+  }
   if (filled < 0) filled = 0;
   if (filled > width) filled = width;
   const bar = `${"\u2588".repeat(filled)}${"\u2591".repeat(width - filled)}`;
@@ -1061,6 +1118,9 @@ function clampFloat(n) {
   if (n < 0) return 0;
   if (n > 100) return 100;
   return n;
+}
+function coloredPct(pct, colorPct, config) {
+  return colorize(`${formatPct(pct)}%`, percentageColor(colorPct), config.color);
 }
 function formatPct(n) {
   return n.toFixed(2);

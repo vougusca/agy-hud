@@ -46,7 +46,7 @@ test("renderStatusline uses payload VCS branch", () => {
 
   const out = renderStatusline(payload, defaultConfig(), null);
   assert.match(strip(out), / main/);
-  assert.match(out, /\x1b\[35m main/);
+  assert.match(out, /\x1b\[38;5;109m main/);
 });
 
 test("renderStatusline finds git branch from workspace project dir", () => {

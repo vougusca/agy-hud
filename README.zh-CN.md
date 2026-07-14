@@ -107,7 +107,9 @@ agy-hud quota refresh
   "show_agent_state": true,
   "show_icons": true,
   "context_value": "percent",
-  "usage_value": "remaining"
+  "usage_value": "remaining",
+  "model_color_theme": "brand",
+  "custom_model_colors": {}
 }
 ```
 
@@ -120,6 +122,8 @@ agy-hud quota refresh
 - `show_icons`:显示 Nerd Font 图标。如果你的终端字体把图标渲染成方框,设为 `false` 可回退到纯文本。
 - `context_value`:`percent`、`tokens` 或 `both`。默认为 `percent`,即上下文显示当前输入侧窗口占用率。存在 token 总量时,百分比和进度条会由 `total_input_tokens / context_window_size` 计算,避免最近一次长输出让 HUD 跳动。
 - `usage_value`:`remaining` 或 `percent`。默认为 `remaining`,即配额文字和进度条都显示剩余量。当 Antigravity 提供 5 小时和周两个窗口时,HUD 会按顺序分开显示各自的刷新倒计时,例如 `Usage ████████░░ 82% (↻ 1h 52m) |  █░░░░░░░░░ 13% (↻ 4d 21h)`。
+- `model_color_theme`: `brand`, `neon`, `pastel` 或 `custom`。设置当前使用模型的配色方案。默认为 `brand`。
+- `custom_model_colors`: 将模型键名(`flash`, `pro`, `claude`, `gpt`)映射到十六进制颜色值(例如 `"#FF0000"`)的对象。仅在 `model_color_theme` 设为 `custom` 时生效。
 
 ## 配额缓存
 

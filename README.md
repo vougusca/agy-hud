@@ -127,7 +127,9 @@ Default config:
   "show_agent_state": true,
   "show_icons": true,
   "context_value": "percent",
-  "usage_value": "remaining"
+  "usage_value": "remaining",
+  "model_color_theme": "brand",
+  "custom_model_colors": {}
 }
 ```
 
@@ -140,6 +142,8 @@ Display options:
 - `show_icons`: shows Nerd Font icons. Set to `false` to fall back to plain text if your terminal font renders boxes.
 - `context_value`: `percent`, `tokens`, or `both`. Default is `percent`, so context shows current input-side window occupancy. When token totals are available, the percentage and bar are derived from `total_input_tokens / context_window_size` so a large latest response does not make the HUD jump. `tokens` shows `125k/1M` (used and window size).
 - `usage_value`: `remaining` or `percent`. Default is `remaining`, so quota text and bar show what is left. When Antigravity provides both windows, the HUD shows them separately with per-window reset durations, for example `Usage ████████░░ 82% (↻ 1h 52m) |  █░░░░░░░░░ 13% (↻ 4d 21h)`.
+- `model_color_theme`: `brand`, `neon`, `pastel`, or `custom`. Sets the color scheme for active models. Default is `brand`.
+- `custom_model_colors`: object mapping model keys (`flash`, `pro`, `claude`, `gpt`) to hex color strings (e.g. `"#FF0000"`). Used only when `model_color_theme` is `custom`.
 
 ## Quota Cache
 
