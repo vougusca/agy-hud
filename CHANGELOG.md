@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.1.8
+
+- Moved the quota cache to `$XDG_CACHE_HOME/agy-hud/` (or `$HOME/.cache/agy-hud/`), out of the `~/.gemini/antigravity-cli/` tree that the Antigravity CLI abandoned in 1.1.0.
+- Upgrades are seamless and need no action: the HUD still reads the old cache until the first refresh writes the new one, and the old file is left in place so downgrades keep working.
+- Force a refresh when the new cache exists but cannot be parsed, so a truncated file cannot be masked indefinitely by a fresh legacy cache.
+- Fixed the subprocess tests writing state and lock files into the real home directory, where they could spawn a detached refresh or unlink a live lock.
+- Documented upgrading, which is not the same as installing: `agy plugin install` does not update `statusLine.command`, so a new version can sit unused while the CLI keeps running the old bundle without any error.
+- Fixed the local-path install instructions. Passing a git clone to `agy plugin install` copies the entire repository into the plugin directory, and fails outright when git's fsmonitor socket is present.
+- The cache directory is now created with mode `0700` and its files with `0600`. They carry a masked email, plan name, and conversation id, and previously inherited the default umask, leaving them readable by other local accounts.
+- Ignore a relative `XDG_CACHE_HOME`, as the XDG spec requires. It would otherwise put a separate cache, lock, and refresh probe inside every project directory the HUD rendered in.
+- A same-frame refresh that repairs a corrupt cache no longer also spawns a background refresh for damage it just fixed.
+- Release builds now verify that the git tag matches `package.json`, `plugin.json`, and the built bundle, and re-check that the committed `dist/` is current. A mistyped tag previously published a release whose archive reported a different version.
+- Documented that installing the plugin does not put an `agy-hud` command on `PATH`. The CLI examples now run the bundle with `node`.
+- Requirements now state Antigravity CLI 1.1.0+ explicitly, since dropping the `components` hook leaves no way to activate the HUD on a CLI without `/statusline`.
+
+## 0.1.7
+
+- Adapted to the Antigravity CLI native status-line architecture: removed the `components` hook block from `plugin.json`, which newer CLI versions no longer honor.
+- Documented the `/statusline <plugin-dir>/hooks/status-line.sh` command needed to enable the HUD after install, for both release and local-path installs.
+- Updated the local plugin verification path to `$HOME/.gemini/config/plugins/agy-hud`, where `agy plugin install` now places plugins.
+- Thanks to @lbwds for reporting and fixing the plugin manifest and install docs.
+
 ## 0.1.6
 
 - Show both 5-hour and weekly quota windows when Antigravity provides both buckets.

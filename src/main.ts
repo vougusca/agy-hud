@@ -8,7 +8,7 @@ import { RefreshResult, refreshQuota } from "./quotaProbe";
 import { branch as gitBranch } from "./gitinfo";
 import { Payload, render } from "./statusline";
 
-export const version = "0.1.6";
+export const version = "0.1.8";
 
 const consumedQuotaRefreshMs = 15 * 1000;
 const untouchedQuotaRefreshMs = 30 * 1000;
@@ -73,16 +73,57 @@ export function configPaths(): string[] {
   return paths;
 }
 
-export function quotaCachePath(): string {
+export function quotaCacheWritePath(): string {
   const explicit = process.env.AGY_HUD_QUOTA_CACHE;
   if (explicit) {
     return explicit;
+  }
+  // The XDG spec requires an absolute path and says to ignore the variable otherwise. A relative
+  // value would make the cache follow the working directory, giving every project its own cache,
+  // lock, and probe.
+  const xdg = process.env.XDG_CACHE_HOME;
+  if (xdg && path.isAbsolute(xdg)) {
+    return path.join(xdg, "agy-hud", "quota_cache.json");
   }
   const home = os.homedir();
   if (!home) {
     return "";
   }
+  return path.join(home, ".cache", "agy-hud", "quota_cache.json");
+}
+
+function legacyQuotaCachePath(): string {
+  const home = os.homedir();
+  if (!home) {
+    return "";
+  }
   return path.join(home, ".gemini", "antigravity-cli", "scratch", "agy-hud", "quota_cache.json");
+}
+
+export function quotaCacheReadCandidates(): string[] {
+  if (process.env.AGY_HUD_QUOTA_CACHE) {
+    return [quotaCacheWritePath()];
+  }
+  const candidates = [quotaCacheWritePath(), legacyQuotaCachePath()];
+  return candidates.filter((candidate, index) => candidate !== "" && candidates.indexOf(candidate) === index);
+}
+
+// Returns the first candidate that parses, plus whether the primary candidate exists but failed to
+// load. A primary that is present and unloadable is a repair condition: a fallback render would
+// otherwise mask the damaged file behind a fresh legacy cache and nothing would ever rewrite it.
+function loadQuotaFromCandidates(candidates: string[]): [Cache | null, boolean, boolean] {
+  let primaryUnloadable = false;
+  for (let index = 0; index < candidates.length; index += 1) {
+    const candidate = candidates[index];
+    const [cache, ok] = loadQuota(candidate);
+    if (ok) {
+      return [cache, true, primaryUnloadable];
+    }
+    if (index === 0 && fs.existsSync(candidate)) {
+      primaryUnloadable = true;
+    }
+  }
+  return [null, false, primaryUnloadable];
 }
 
 function gitBranchFromPayload(payload: Payload): string {
@@ -175,24 +216,26 @@ export async function runCli(args: string[], deps: CliDeps = {}): Promise<number
     const cfg = loadFromPaths(configPaths());
     const raw = await readStdin(deps.stdin ?? process.stdin);
     const payload = parsePayload(raw);
-    const cachePath = quotaCachePath();
-    const [cache, ok] = loadQuota(cachePath);
-    const displayCache = await refreshQuotaBeforeRenderIfNeeded(
+    const cachePath = quotaCacheWritePath();
+    const [cache, ok, primaryUnloadable] = loadQuotaFromCandidates(quotaCacheReadCandidates());
+    const [displayCache, refreshed] = await refreshQuotaBeforeRenderIfNeeded(
       cachePath,
       ok ? cache : null,
       payload,
       deps.refreshQuota ?? refreshQuota
     );
-    triggerBackgroundRefreshIfNeeded(cachePath, displayCache, payload);
+    // A same-frame refresh already rewrote the write path, so a corrupt primary is repaired by now.
+    // Passing the stale flag on would spawn a second probe for damage that no longer exists.
+    triggerBackgroundRefreshIfNeeded(cachePath, displayCache, payload, primaryUnloadable && !refreshed);
     stdout(`${renderStatusline(raw, cfg, displayCache)}\n`);
     return 0;
   }
 
   if (command === "quota") {
     if (args[1] === "refresh") {
-      const lockPath = quotaCachePath() + ".lock";
+      const lockPath = quotaCacheWritePath() + ".lock";
       try {
-        const result = await (deps.refreshQuota ?? refreshQuota)(quotaCachePath());
+        const result = await (deps.refreshQuota ?? refreshQuota)(quotaCacheWritePath());
         stderr(`[quota_probe] ${result.message}\n`);
         if (result.ok && result.summary) {
           stdout(`${result.summary}\n`);
@@ -242,26 +285,29 @@ async function refreshQuotaBeforeRenderIfNeeded(
   cache: Cache | null,
   payload: Payload | null,
   refresh: (cachePath: string) => Promise<RefreshResult>
-): Promise<Cache | null> {
+): Promise<[Cache | null, boolean]> {
   if (!shouldRefreshBeforeRender(cachePath, payload, new Date())) {
-    return cache;
+    return [cache, false];
   }
   try {
     const result = await refresh(cachePath);
     if (!result.ok) {
-      return cache;
+      return [cache, false];
     }
     const [freshCache, ok] = loadQuota(cachePath);
     if (!ok) {
-      return cache;
+      return [cache, false];
     }
+    // No previous state is read here: payload is non-null and activityRefresh is true, so the merge
+    // overwrites every field. Reading a companion first would be dead work, and giving it a legacy
+    // fallback would only create a way to merge stale fields into a file we are about to overwrite.
     saveStatuslineRefreshState(
       refreshStatePath(cachePath),
-      mergeStatuslineRefreshState(loadStatuslineRefreshState(refreshStatePath(cachePath)), payload, true, new Date())
+      mergeStatuslineRefreshState(null, payload, true, new Date())
     );
-    return freshCache;
+    return [freshCache, true];
   } catch {
-    return cache;
+    return [cache, false];
   }
 }
 
@@ -269,7 +315,7 @@ function shouldRefreshBeforeRender(cachePath: string, payload: Payload | null, n
   if (cachePath === "" || !payload) {
     return false;
   }
-  const prevState = loadStatuslineRefreshState(refreshStatePath(cachePath));
+  const prevState = loadRefreshStateWithFallback(quotaCacheReadCandidates());
   const prevAgentState = prevState?.agentState ?? "";
   const agentState = normalizeAgentState(payload.agent_state);
   if (agentState !== "idle" || prevAgentState === "" || prevAgentState === "idle") {
@@ -284,15 +330,20 @@ function shouldRefreshBeforeRender(cachePath: string, payload: Payload | null, n
   return true;
 }
 
-function triggerBackgroundRefreshIfNeeded(cachePath: string, cache: Cache | null, payload: Payload | null = null): void {
+function triggerBackgroundRefreshIfNeeded(
+  cachePath: string,
+  cache: Cache | null,
+  payload: Payload | null = null,
+  repairRefresh = false
+): void {
   const now = new Date();
   const statePath = refreshStatePath(cachePath);
-  const prevState = loadStatuslineRefreshState(statePath);
+  const prevState = loadRefreshStateWithFallback(quotaCacheReadCandidates());
   const activityRefresh = shouldTriggerActivityRefresh(cache, payload, prevState, now);
   const nextState = mergeStatuslineRefreshState(prevState, payload, activityRefresh, now);
   saveStatuslineRefreshState(statePath, nextState);
 
-  if (!quotaCacheNeedsRefresh(cache, now) && !activityRefresh) {
+  if (!quotaCacheNeedsRefresh(cache, now) && !activityRefresh && !repairRefresh) {
     return;
   }
 
@@ -352,6 +403,23 @@ function refreshStatePath(cachePath: string): string {
   return `${cachePath}.statusline.json`;
 }
 
+// Falls back to a legacy companion only when the primary companion is ABSENT. A primary that exists
+// but fails to parse must read as null, exactly as it does today: falling back there would
+// resurrect a stale agentState, and a stale "working" against an idle payload fires an unlocked
+// same-frame refresh. Concurrent renders hitting a mid-write primary would each launch a probe.
+function loadRefreshStateWithFallback(candidates: string[]): StatuslineRefreshState | null {
+  for (const candidate of candidates) {
+    const statePath = refreshStatePath(candidate);
+    if (statePath === "") {
+      continue;
+    }
+    if (fs.existsSync(statePath)) {
+      return loadStatuslineRefreshState(statePath);
+    }
+  }
+  return null;
+}
+
 function loadStatuslineRefreshState(statePath: string): StatuslineRefreshState | null {
   if (statePath === "") {
     return null;
@@ -374,8 +442,10 @@ function saveStatuslineRefreshState(statePath: string, state: StatuslineRefreshS
     return;
   }
   try {
-    fs.mkdirSync(path.dirname(statePath), { recursive: true });
-    fs.writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+    // The cache dir holds quota data and this file records the conversation id and agent state, so
+    // keep both private rather than leaving them world-readable under the default umask.
+    fs.mkdirSync(path.dirname(statePath), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
   } catch {
     // ignore
   }
