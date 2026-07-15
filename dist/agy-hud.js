@@ -33,7 +33,8 @@ var main_exports = {};
 __export(main_exports, {
   configPaths: () => configPaths,
   quotaCacheNeedsRefresh: () => quotaCacheNeedsRefresh,
-  quotaCachePath: () => quotaCachePath,
+  quotaCacheReadCandidates: () => quotaCacheReadCandidates,
+  quotaCacheWritePath: () => quotaCacheWritePath,
   renderStatusline: () => renderStatusline,
   runCli: () => runCli,
   version: () => version
@@ -335,8 +336,10 @@ function defaultRuntime() {
     },
     request: queryLanguageServer,
     now: () => /* @__PURE__ */ new Date(),
-    writeFile: (filePath, data) => import_node_fs3.default.writeFileSync(filePath, data, "utf8"),
-    mkdir: (dirPath) => import_node_fs3.default.mkdirSync(dirPath, { recursive: true })
+    // The cache carries a masked email, plan name, and per-model quota, so keep it private instead
+    // of leaving it world-readable under the default umask.
+    writeFile: (filePath, data) => import_node_fs3.default.writeFileSync(filePath, data, { encoding: "utf8", mode: 384 }),
+    mkdir: (dirPath) => import_node_fs3.default.mkdirSync(dirPath, { recursive: true, mode: 448 })
   };
 }
 function windowsPs() {
@@ -1150,7 +1153,7 @@ function title(raw) {
 }
 
 // src/main.ts
-var version = "0.1.6";
+var version = "0.1.8";
 var consumedQuotaRefreshMs = 15 * 1e3;
 var untouchedQuotaRefreshMs = 30 * 1e3;
 function renderStatusline(input, cfg = defaultConfig(), cache = null) {
@@ -1205,16 +1208,48 @@ function configPaths() {
   }
   return paths;
 }
-function quotaCachePath() {
+function quotaCacheWritePath() {
   const explicit = process.env.AGY_HUD_QUOTA_CACHE;
   if (explicit) {
     return explicit;
+  }
+  const xdg = process.env.XDG_CACHE_HOME;
+  if (xdg && import_node_path4.default.isAbsolute(xdg)) {
+    return import_node_path4.default.join(xdg, "agy-hud", "quota_cache.json");
   }
   const home = import_node_os.default.homedir();
   if (!home) {
     return "";
   }
+  return import_node_path4.default.join(home, ".cache", "agy-hud", "quota_cache.json");
+}
+function legacyQuotaCachePath() {
+  const home = import_node_os.default.homedir();
+  if (!home) {
+    return "";
+  }
   return import_node_path4.default.join(home, ".gemini", "antigravity-cli", "scratch", "agy-hud", "quota_cache.json");
+}
+function quotaCacheReadCandidates() {
+  if (process.env.AGY_HUD_QUOTA_CACHE) {
+    return [quotaCacheWritePath()];
+  }
+  const candidates = [quotaCacheWritePath(), legacyQuotaCachePath()];
+  return candidates.filter((candidate, index) => candidate !== "" && candidates.indexOf(candidate) === index);
+}
+function loadQuotaFromCandidates(candidates) {
+  let primaryUnloadable = false;
+  for (let index = 0; index < candidates.length; index += 1) {
+    const candidate = candidates[index];
+    const [cache, ok] = load(candidate);
+    if (ok) {
+      return [cache, true, primaryUnloadable];
+    }
+    if (index === 0 && import_node_fs5.default.existsSync(candidate)) {
+      primaryUnloadable = true;
+    }
+  }
+  return [null, false, primaryUnloadable];
 }
 function gitBranchFromPayload(payload) {
   const paths = [
@@ -1284,24 +1319,24 @@ async function runCli(args, deps = {}) {
     const cfg = loadFromPaths(configPaths());
     const raw = await readStdin(deps.stdin ?? process.stdin);
     const payload = parsePayload(raw);
-    const cachePath = quotaCachePath();
-    const [cache, ok] = load(cachePath);
-    const displayCache = await refreshQuotaBeforeRenderIfNeeded(
+    const cachePath = quotaCacheWritePath();
+    const [cache, ok, primaryUnloadable] = loadQuotaFromCandidates(quotaCacheReadCandidates());
+    const [displayCache, refreshed] = await refreshQuotaBeforeRenderIfNeeded(
       cachePath,
       ok ? cache : null,
       payload,
       deps.refreshQuota ?? refreshQuota
     );
-    triggerBackgroundRefreshIfNeeded(cachePath, displayCache, payload);
+    triggerBackgroundRefreshIfNeeded(cachePath, displayCache, payload, primaryUnloadable && !refreshed);
     stdout(`${renderStatusline(raw, cfg, displayCache)}
 `);
     return 0;
   }
   if (command === "quota") {
     if (args[1] === "refresh") {
-      const lockPath = quotaCachePath() + ".lock";
+      const lockPath = quotaCacheWritePath() + ".lock";
       try {
-        const result = await (deps.refreshQuota ?? refreshQuota)(quotaCachePath());
+        const result = await (deps.refreshQuota ?? refreshQuota)(quotaCacheWritePath());
         stderr(`[quota_probe] ${result.message}
 `);
         if (result.ok && result.summary) {
@@ -1346,31 +1381,31 @@ function readStdin(stdin) {
 }
 async function refreshQuotaBeforeRenderIfNeeded(cachePath, cache, payload, refresh) {
   if (!shouldRefreshBeforeRender(cachePath, payload, /* @__PURE__ */ new Date())) {
-    return cache;
+    return [cache, false];
   }
   try {
     const result = await refresh(cachePath);
     if (!result.ok) {
-      return cache;
+      return [cache, false];
     }
     const [freshCache, ok] = load(cachePath);
     if (!ok) {
-      return cache;
+      return [cache, false];
     }
     saveStatuslineRefreshState(
       refreshStatePath(cachePath),
-      mergeStatuslineRefreshState(loadStatuslineRefreshState(refreshStatePath(cachePath)), payload, true, /* @__PURE__ */ new Date())
+      mergeStatuslineRefreshState(null, payload, true, /* @__PURE__ */ new Date())
     );
-    return freshCache;
+    return [freshCache, true];
   } catch {
-    return cache;
+    return [cache, false];
   }
 }
 function shouldRefreshBeforeRender(cachePath, payload, now) {
   if (cachePath === "" || !payload) {
     return false;
   }
-  const prevState = loadStatuslineRefreshState(refreshStatePath(cachePath));
+  const prevState = loadRefreshStateWithFallback(quotaCacheReadCandidates());
   const prevAgentState = prevState?.agentState ?? "";
   const agentState = normalizeAgentState(payload.agent_state);
   if (agentState !== "idle" || prevAgentState === "" || prevAgentState === "idle") {
@@ -1384,14 +1419,14 @@ function shouldRefreshBeforeRender(cachePath, payload, now) {
   }
   return true;
 }
-function triggerBackgroundRefreshIfNeeded(cachePath, cache, payload = null) {
+function triggerBackgroundRefreshIfNeeded(cachePath, cache, payload = null, repairRefresh = false) {
   const now = /* @__PURE__ */ new Date();
   const statePath = refreshStatePath(cachePath);
-  const prevState = loadStatuslineRefreshState(statePath);
+  const prevState = loadRefreshStateWithFallback(quotaCacheReadCandidates());
   const activityRefresh = shouldTriggerActivityRefresh(cache, payload, prevState, now);
   const nextState = mergeStatuslineRefreshState(prevState, payload, activityRefresh, now);
   saveStatuslineRefreshState(statePath, nextState);
-  if (!quotaCacheNeedsRefresh(cache, now) && !activityRefresh) {
+  if (!quotaCacheNeedsRefresh(cache, now) && !activityRefresh && !repairRefresh) {
     return;
   }
   const lockPath = cachePath + ".lock";
@@ -1444,6 +1479,18 @@ function refreshStatePath(cachePath) {
   }
   return `${cachePath}.statusline.json`;
 }
+function loadRefreshStateWithFallback(candidates) {
+  for (const candidate of candidates) {
+    const statePath = refreshStatePath(candidate);
+    if (statePath === "") {
+      continue;
+    }
+    if (import_node_fs5.default.existsSync(statePath)) {
+      return loadStatuslineRefreshState(statePath);
+    }
+  }
+  return null;
+}
 function loadStatuslineRefreshState(statePath) {
   if (statePath === "") {
     return null;
@@ -1465,9 +1512,9 @@ function saveStatuslineRefreshState(statePath, state2) {
     return;
   }
   try {
-    import_node_fs5.default.mkdirSync(import_node_path4.default.dirname(statePath), { recursive: true });
+    import_node_fs5.default.mkdirSync(import_node_path4.default.dirname(statePath), { recursive: true, mode: 448 });
     import_node_fs5.default.writeFileSync(statePath, `${JSON.stringify(state2, null, 2)}
-`, "utf8");
+`, { encoding: "utf8", mode: 384 });
   } catch {
   }
 }
@@ -1555,7 +1602,8 @@ if (require.main === module) {
 0 && (module.exports = {
   configPaths,
   quotaCacheNeedsRefresh,
-  quotaCachePath,
+  quotaCacheReadCandidates,
+  quotaCacheWritePath,
   renderStatusline,
   runCli,
   version
