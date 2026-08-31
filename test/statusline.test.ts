@@ -39,6 +39,26 @@ test("combined model plan badge and no duplicate model", () => {
   assert.equal((out.match(/3\.5 Flash Med/g) ?? []).length, 1);
 });
 
+test("combined model plan badge displays Ultra for various rawPlan variations", () => {
+  const variations = ["Ultra", "Google AI Ultra", "Google AI Ultra Plan", "gemini ultra", "ULTRA", "google ai ultra tier"];
+  for (const rawPlan of variations) {
+    const payload = fixturePayload();
+    payload.plan_tier = rawPlan;
+    const out = strip(renderFixture(defaultConfig(), null, payload));
+    assert.match(out, /󱐋 3\.5 Flash Med \|  Ultra/, `Failed for rawPlan: ${rawPlan}`);
+  }
+});
+
+test("combined model plan badge displays Pro for various rawPlan variations", () => {
+  const variations = ["Pro", "Google AI Pro", "Google AI Pro Plan", "gemini pro", "PRO", "google ai pro tier"];
+  for (const rawPlan of variations) {
+    const payload = fixturePayload();
+    payload.plan_tier = rawPlan;
+    const out = strip(renderFixture(defaultConfig(), null, payload));
+    assert.match(out, /󱐋 3\.5 Flash Med \|  Pro/, `Failed for rawPlan: ${rawPlan}`);
+  }
+});
+
 test("multiline default shape uses context and quota", () => {
   const cache: Cache = {
     models: {

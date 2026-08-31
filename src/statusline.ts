@@ -293,7 +293,10 @@ function renderSingleLine(payload: Payload, config: Config, width: number, model
 
 function renderModelSegment(shortModel: string, icon: string, rawPlan: string, config: Config, mColor: string): string {
   let plan = "Plan ?";
-  if (rawPlan === "Google AI Pro") {
+  const lowerPlan = rawPlan.toLowerCase();
+  if (lowerPlan.includes("ultra")) {
+    plan = "Ultra";
+  } else if (lowerPlan.includes("pro")) {
     plan = "Pro";
   } else if (rawPlan !== "") {
     plan = "Free";
@@ -302,15 +305,15 @@ function renderModelSegment(shortModel: string, icon: string, rawPlan: string, c
     const modelStr = `${withIcon(config, `${icon} `, "")}${shortModel}`;
     return `${colorize(modelStr, mColor, config.color)} ${colorize(`| ${renderPlan(plan, config)}`, colorBlue, config.color)}`;
   }
-  if (plan === "Pro") {
+  if (plan === "Pro" || plan === "Ultra") {
     return colorize(`${withIcon(config, `${icon} `, "")}${renderPlan(plan, config)} Tier`, colorBlue, config.color);
   }
   return colorize(`${withIcon(config, `${icon} `, "")}${plan}`, colorBlue, config.color);
 }
 
 function renderPlan(plan: string, config: Config): string {
-  if (plan === "Pro") {
-    return `${withIcon(config, `${iconGoogleG} `, "")}Pro`;
+  if (plan === "Pro" || plan === "Ultra") {
+    return `${withIcon(config, `${iconGoogleG} `, "")}${plan}`;
   }
   return plan;
 }
