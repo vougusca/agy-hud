@@ -17,6 +17,9 @@ import { execFileSync } from "node:child_process";
 
 function withEnv(overrides: Record<string, string | undefined>, run: () => void): void {
   const saved: Record<string, string | undefined> = {};
+  if ("HOME" in overrides) {
+    overrides["USERPROFILE"] = overrides["HOME"];
+  }
   for (const key of Object.keys(overrides)) {
     saved[key] = process.env[key];
     const value = overrides[key];
@@ -54,9 +57,23 @@ function homeFixture(): HomeFixture {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), "agy-hud-home-"));
   const writePath = path.join(home, ".cache", "agy-hud", "quota_cache.json");
   const legacyPath = path.join(home, legacyCacheRelative);
-  const probePath = path.join(home, "spawn-probe.sh");
+  const isWin = process.platform === "win32";
+  const probePath = path.join(home, isWin ? "spawn-probe.exe" : "spawn-probe.sh");
   const markerPath = path.join(home, "spawned.txt");
-  fs.writeFileSync(probePath, `#!/bin/sh\necho "$@" >> "${markerPath}"\n`, { encoding: "utf8", mode: 0o755 });
+  if (isWin) {
+    const csPath = path.join(home, "probe.cs");
+    fs.writeFileSync(csPath, `
+      using System.IO;
+      class Program {
+          static void Main(string[] args) {
+              File.AppendAllText("${markerPath.replace(/\\/g, "\\\\")}", string.Join(" ", args) + "\\n");
+          }
+      }
+    `);
+    require("child_process").execSync(`C:\\Windows\\Microsoft.NET\\Framework\\v4.0.30319\\csc.exe /nologo /out:"${probePath}" "${csPath}"`);
+  } else {
+    fs.writeFileSync(probePath, `#!/bin/sh\necho "$@" >> "${markerPath}"\n`, { encoding: "utf8", mode: 0o755 });
+  }
   return { home, writePath, legacyPath, probePath, markerPath };
 }
 
@@ -88,11 +105,13 @@ function statuslinePayload(agentState = "idle"): string {
 async function runStatuslineInHome(fixture: HomeFixture, payload: string): Promise<string> {
   const saved = {
     home: process.env.HOME,
+    userprofile: process.env.USERPROFILE,
     xdg: process.env.XDG_CACHE_HOME,
     explicit: process.env.AGY_HUD_QUOTA_CACHE,
     argv0: process.argv[0]
   };
   process.env.HOME = fixture.home;
+  process.env.USERPROFILE = fixture.home;
   delete process.env.XDG_CACHE_HOME;
   delete process.env.AGY_HUD_QUOTA_CACHE;
   process.argv[0] = fixture.probePath;
@@ -111,6 +130,8 @@ async function runStatuslineInHome(fixture: HomeFixture, payload: string): Promi
     process.argv[0] = saved.argv0;
     if (saved.home === undefined) delete process.env.HOME;
     else process.env.HOME = saved.home;
+    if (saved.userprofile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = saved.userprofile;
     if (saved.xdg === undefined) delete process.env.XDG_CACHE_HOME;
     else process.env.XDG_CACHE_HOME = saved.xdg;
     if (saved.explicit === undefined) delete process.env.AGY_HUD_QUOTA_CACHE;
@@ -132,7 +153,7 @@ test("statusline renders usage from the legacy cache when only the legacy cache 
 
   const out = await runStatuslineInHome(fixture, statuslinePayload());
 
-  assert.match(out, /40% left/);
+  assert.match(out, /40\.00% left/);
 });
 
 test("statusline prefers the new cache when both caches parse", async () => {
@@ -142,7 +163,7 @@ test("statusline prefers the new cache when both caches parse", async () => {
 
   const out = await runStatuslineInHome(fixture, statuslinePayload());
 
-  assert.match(out, /40% left/);
+  assert.match(out, /40\.00% left/);
 });
 
 test("statusline falls back to a valid legacy cache when the new cache is corrupt, and forces a repair refresh", async () => {
@@ -153,7 +174,7 @@ test("statusline falls back to a valid legacy cache when the new cache is corrup
 
   const out = await runStatuslineInHome(fixture, statuslinePayload());
 
-  assert.match(out, /40% left/);
+  assert.match(out, /40\.00% left/);
   assert.equal(await waitForSpawn(fixture.markerPath), true, "a corrupt primary cache must force a repair refresh");
 });
 
@@ -177,11 +198,13 @@ function writeRefreshState(cachePath: string, agentState: string, ageMs = 60_000
 async function runInHome<T>(fixture: HomeFixture, run: () => Promise<T>): Promise<T> {
   const saved = {
     home: process.env.HOME,
+    userprofile: process.env.USERPROFILE,
     xdg: process.env.XDG_CACHE_HOME,
     explicit: process.env.AGY_HUD_QUOTA_CACHE,
     argv0: process.argv[0]
   };
   process.env.HOME = fixture.home;
+  process.env.USERPROFILE = fixture.home;
   delete process.env.XDG_CACHE_HOME;
   delete process.env.AGY_HUD_QUOTA_CACHE;
   process.argv[0] = fixture.probePath;
@@ -191,6 +214,8 @@ async function runInHome<T>(fixture: HomeFixture, run: () => Promise<T>): Promis
     process.argv[0] = saved.argv0;
     if (saved.home === undefined) delete process.env.HOME;
     else process.env.HOME = saved.home;
+    if (saved.userprofile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = saved.userprofile;
     if (saved.xdg === undefined) delete process.env.XDG_CACHE_HOME;
     else process.env.XDG_CACHE_HOME = saved.xdg;
     if (saved.explicit === undefined) delete process.env.AGY_HUD_QUOTA_CACHE;
@@ -222,7 +247,7 @@ test("same-frame idle refresh targets the write path and reloads from it", async
   });
 
   assert.deepEqual(seen, [fixture.writePath]);
-  assert.match(out, /10% left/, "the HUD must render the cache reloaded from the write path");
+  assert.match(out, /10\.00% left/, "the HUD must render the cache reloaded from the write path");
 });
 
 test("background refresh writes lock and state under the new path only", async () => {
@@ -348,6 +373,7 @@ test("the post-refresh state is rebuilt from the payload and never inherits lega
 });
 
 test("the cache directory and state file are not world-readable", async () => {
+  if (os.platform() === "win32") return;
   const fixture = homeFixture();
   writeCache(fixture.legacyPath, 0.4, 60_000);
 
@@ -1009,7 +1035,7 @@ test("statusline renders refreshed quota on the same idle transition", async () 
 
     assert.equal(code, 0);
     assert.match(strip(stdout), /3.00% left/);
-    assert.doesNotMatch(strip(stdout), /29% left/);
+    assert.doesNotMatch(strip(stdout), /29\.00% left/);
   } finally {
     if (oldCacheEnv === undefined) delete process.env.AGY_HUD_QUOTA_CACHE;
     else process.env.AGY_HUD_QUOTA_CACHE = oldCacheEnv;
