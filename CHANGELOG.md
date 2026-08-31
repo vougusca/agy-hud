@@ -1,4 +1,6 @@
-# Changelog
+# Changel- Add `hooks/multiplex-hud.js` wrapper script for custom statusline multiplexing.
+- Improve test subprocess fixture portability for Windows (`win32`) environments.
+og
 
 ## 0.1.8
 
