@@ -1,5 +1,5 @@
 import { Config } from "./config";
-import { strip, visibleLen } from "./ansi";
+import { truncateColumns, visibleLen } from "./ansi";
 import { Cache, matchModel, usagePercent as quotaUsagePercent } from "./quota";
 import path from "node:path";
 
@@ -124,6 +124,11 @@ export interface Payload {
     current_dir?: string;
     project_dir?: string;
   };
+  cost?: {
+    total_usd?: number;
+    subagent_usd?: number;
+    estimated?: boolean;
+  };
 }
 
 interface OfficialQuotaBucket {
@@ -160,11 +165,29 @@ export function shortModelName(display: string): string {
   short = short.split(")").join("");
   short = short.split("Medium").join("Med");
   short = short.trim().split(/\s+/).filter(Boolean).join(" ");
-  const runes = Array.from(short);
-  if (runes.length > 18) {
-    short = `${runes.slice(0, 15).join("")}...`;
+  if (visibleLen(short) > 18) {
+    short = `${truncateColumns(short, 15)}...`;
   }
   return short;
+}
+
+export function formatCost(usd: number): string {
+  if (!Number.isFinite(usd) || usd <= 0) {
+    return "$0.00";
+  }
+  if (usd >= 0.01) {
+    return `$${usd.toFixed(2)}`;
+  }
+  if (usd >= 0.001) {
+    return `$${usd.toFixed(3)}`;
+  }
+  return "<$0.001";
+}
+
+function renderCost(cost: Payload["cost"], config: Config): string {
+  const usd = cost?.total_usd;
+  if (!config.showCost || typeof usd !== "number" || !Number.isFinite(usd) || usd < 0) return "";
+  return colorize(`${cost?.estimated === true ? "~" : ""}${formatCost(usd)}`, colorCyan, config.color);
 }
 
 export function render(payload: Payload, opts: RenderOptions): string {
@@ -192,9 +215,14 @@ function renderMultiline(payload: Payload, config: Config, width: number, modelS
   }
   const stateText = config.showAgentState ? colorize(stateLabel, stateColor(stateLabel), config.color) : "";
   line1Parts.push(stateText);
-  let line1 = joinHeader(...line1Parts);
+  const costText = renderCost(payload.cost, config);
+  let line1 = joinHeader(...line1Parts, costText);
   if (visibleLen(line1) > width) {
-    line1 = joinHeader(modelSegment, colorize(renderGitSegment(branch, config), colorGit, config.color), stateText);
+    line1 = joinHeader(...line1Parts);
+  }
+  if (visibleLen(line1) > width) {
+    const git = config.showGitBranch && branch !== "" ? colorize(renderGitSegment(branch, config), colorGit, config.color) : "";
+    line1 = joinHeader(modelSegment, git, stateText);
   }
   if (visibleLen(line1) > width) {
     line1 = joinHeader(modelSegment, stateText);
@@ -270,11 +298,13 @@ function renderSingleLine(payload: Payload, config: Config, width: number, model
     usage = text; // Rely on internal colorization for warnings
   }
   const stateText = config.showAgentState ? colorize(stateLabel, stateColor(stateLabel), config.color) : "";
+  const costText = renderCost(payload.cost, config);
   let bar = "";
   if (config.showProgressBar) {
     bar = progressBar(ctxPct, 10, config.color);
   }
   const levels = [
+    [coloredBadge, ctx, tokens, bar, usage, stateText, costText],
     [coloredBadge, ctx, tokens, bar, usage, stateText],
     [coloredBadge, ctx, bar, usage, stateText],
     [coloredBadge, ctx, usage, stateText],
@@ -293,12 +323,11 @@ function renderSingleLine(payload: Payload, config: Config, width: number, model
 
 function renderModelSegment(shortModel: string, icon: string, rawPlan: string, config: Config, mColor: string): string {
   let plan = "Plan ?";
-  const lowerPlan = rawPlan.toLowerCase();
-  if (lowerPlan.includes("ultra")) {
+  if (/\bultra\b/i.test(rawPlan)) {
     plan = "Ultra";
-  } else if (lowerPlan.includes("pro")) {
+  } else if (/\bpro\b/i.test(rawPlan)) {
     plan = "Pro";
-  } else if (rawPlan !== "") {
+  } else if (/\bfree\b/i.test(rawPlan)) {
     plan = "Free";
   }
   if (config.showModel && shortModel !== "") {
@@ -655,7 +684,7 @@ function fit(input: string, width: number): string {
   if (width <= 0 || visibleLen(input) <= width) {
     return input;
   }
-  return Array.from(strip(input)).slice(0, width).join("");
+  return truncateColumns(input, width);
 }
 
 export function clampInt(n: number): number {

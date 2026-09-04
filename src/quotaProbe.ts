@@ -18,6 +18,15 @@ export interface ProbeRuntime {
   now(): Date;
   writeFile(filePath: string, data: string): void;
   mkdir(dirPath: string): void;
+  readFile?(filePath: string): string;
+  processIdentity?(pid: string): string | null;
+}
+
+interface ServerHint {
+  pid: string;
+  port: number;
+  identity: string;
+  discoveredAt: string;
 }
 
 export interface RefreshResult {
@@ -129,73 +138,78 @@ export async function refreshQuota(cachePath: string, runtime: ProbeRuntime = de
     }
   }
 
-  let rawResponse: unknown | null = null;
-  let methodMessage = "";
-
   if (envPort && /^\d+$/.test(envPort)) {
     const port = Number(envPort);
-    try {
-      rawResponse = await runtime.request(port, envToken);
-      if (rawResponse) {
-        methodMessage = `using GEMINI_CLI_IDE_SERVER_PORT ${port}`;
+    const rawResponse = await tryRequest(runtime, port, envToken);
+    if (rawResponse) {
+      const built = buildQuotaCache(rawResponse, runtime.now());
+      if (!built) {
+        return { ok: false, message: "GetUserStatus returned malformed quota data." };
       }
+      return saveQuotaCache(cachePath, built, runtime, `using GEMINI_CLI_IDE_SERVER_PORT ${port}`);
+    }
+  }
+
+  const hint = loadServerHint(cachePath, runtime);
+  if (hint) {
+    const raw = await tryRequest(runtime, hint.port, "");
+    const built = buildQuotaCache(raw, runtime.now());
+    if (built) return saveQuotaCache(cachePath, built, runtime);
+    // This is a disposable discovery hint, never quota or credentials. A concurrent replacement
+    // lost here only costs another discovery; it cannot suppress or corrupt the quota refresh.
+    saveServerHint(cachePath, null, runtime);
+  }
+
+  let psOutput = "";
+  try {
+    psOutput = runtime.ps();
+  } catch (err) {
+    return { ok: false, message: `Failed to list processes: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  const languageServer = parseLanguageServerInfo(psOutput);
+  const candidates = [...parseAgyServerInfos(psOutput), ...(languageServer ? [languageServer] : [])];
+  if (candidates.length === 0) {
+    return { ok: false, message: "No running language_server or agy quota server found." };
+  }
+
+  let sawPort = false;
+  let sawResponse = false;
+  for (const info of candidates) {
+    // Identity is required only for hint reuse. If targeted inspection fails, full discovery
+    // must remain available; the optional optimization must never disable quota refreshes.
+    const identity = info.kind === "agy" ? processIdentity(runtime, info.pid) : null;
+    let ports: number[];
+    try {
+      ports = parseListeningPorts(runtime.lsof(info.pid));
     } catch {
-      // ignore and fall through
+      continue;
     }
-  }
-
-  if (!rawResponse) {
-    let psOutput = "";
-    try {
-      psOutput = runtime.ps();
-    } catch (err) {
-      return { ok: false, message: `Failed to list processes: ${err instanceof Error ? err.message : String(err)}` };
+    if (ports.length > 0) {
+      sawPort = true;
     }
-    const languageServer = parseLanguageServerInfo(psOutput);
-    const candidates = [...parseAgyServerInfos(psOutput), ...(languageServer ? [languageServer] : [])];
-    if (candidates.length === 0) {
-      return { ok: false, message: "No running language_server or agy quota server found." };
-    }
-
-    let sawPort = false;
-    for (const info of candidates) {
-      let ports: number[];
-      try {
-        ports = parseListeningPorts(runtime.lsof(info.pid));
-      } catch {
-        continue;
-      }
-      if (ports.length > 0) {
-        sawPort = true;
-      }
-      for (const port of ports) {
-        try {
-          rawResponse = await runtime.request(port, info.csrfToken);
-          if (rawResponse) {
-            methodMessage = `using discovered port ${port}`;
-            break;
-          }
-        } catch {
-          // ignore and try next
+    for (const port of ports) {
+      const rawResponse = await tryRequest(runtime, port, info.csrfToken);
+      if (rawResponse) sawResponse = true;
+      const built = buildQuotaCache(rawResponse, runtime.now());
+      if (built) {
+        const result = saveQuotaCache(cachePath, built, runtime, `using discovered port ${port}`);
+        if (identity) {
+          saveServerHint(cachePath, { pid: info.pid, port, identity, discoveredAt: runtime.now().toISOString() }, runtime);
         }
+        return result;
       }
-      if (rawResponse) {
-        break;
-      }
-    }
-    if (!sawPort) {
-      return { ok: false, message: "No listening ports found on quota server." };
     }
   }
-
-  if (!rawResponse) {
+  if (!sawPort) {
+    return { ok: false, message: "No listening ports found on quota server." };
+  }
+  if (!sawResponse) {
     return { ok: false, message: "Failed to query GetUserStatus from all identified ports." };
   }
+  return { ok: false, message: "GetUserStatus returned malformed quota data." };
+}
 
-  const built = buildQuotaCache(rawResponse, runtime.now());
-  if (!built) {
-    return { ok: false, message: "GetUserStatus returned malformed quota data." };
-  }
+function saveQuotaCache(cachePath: string, built: NonNullable<ReturnType<typeof buildQuotaCache>>, runtime: ProbeRuntime, methodMessage?: string): RefreshResult {
   runtime.mkdir(path.dirname(cachePath));
   runtime.writeFile(cachePath, `${JSON.stringify(built.cache, null, 2)}\n`);
   return {
@@ -204,6 +218,46 @@ export async function refreshQuota(cachePath: string, runtime: ProbeRuntime = de
     cachePath,
     summary: built.summary
   };
+}
+
+function loadServerHint(cachePath: string, runtime: ProbeRuntime): ServerHint | null {
+  try {
+    const raw = runtime.readFile?.(`${cachePath}.server.json`);
+    if (!raw || raw.length > 4096) return null;
+    const hint = JSON.parse(raw) as ServerHint | null;
+    if (!hint || typeof hint.pid !== "string" || !/^[1-9]\d{0,9}$/.test(hint.pid) || Number(hint.pid) > 2147483647 ||
+      !Number.isInteger(hint.port) || hint.port < 1 || hint.port > 65535 ||
+      typeof hint.identity !== "string" || hint.identity === "" || typeof hint.discoveredAt !== "string") return null;
+    const age = runtime.now().getTime() - Date.parse(hint.discoveredAt);
+    if (!Number.isFinite(age) || age < 0 || age >= 5 * 60 * 1000) return null;
+    return processIdentity(runtime, hint.pid) === hint.identity ? hint : null;
+  } catch {
+    return null;
+  }
+}
+
+function processIdentity(runtime: ProbeRuntime, pid: string): string | null {
+  try {
+    return runtime.processIdentity?.(pid) || null;
+  } catch {
+    return null;
+  }
+}
+
+function saveServerHint(cachePath: string, hint: ServerHint | null, runtime: ProbeRuntime): void {
+  try {
+    runtime.writeFile(`${cachePath}.server.json`, `${JSON.stringify(hint)}\n`);
+  } catch {
+    // A missing, truncated or unwritable hint only disables this optimization.
+  }
+}
+
+async function tryRequest(runtime: ProbeRuntime, port: number, csrfToken: string): Promise<unknown | null> {
+  try {
+    return await runtime.request(port, csrfToken);
+  } catch {
+    return null;
+  }
 }
 
 function defaultRuntime(): ProbeRuntime {
@@ -224,6 +278,14 @@ function defaultRuntime(): ProbeRuntime {
     },
     request: queryLanguageServer,
     now: () => new Date(),
+    readFile: filePath => fs.readFileSync(filePath, "utf8"),
+    processIdentity: pid => {
+      const identity = execFileSync("ps", ["-p", pid, "-o", "lstart=", "-o", "comm="], {
+        encoding: "utf8", timeout: 1000, env: { ...process.env, LC_ALL: "C" }
+      }).trim();
+      const match = identity.match(/^\w{3}\s+\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4}\s+(.+)$/);
+      return match && path.basename(match[1]) === "agy" ? identity : null;
+    },
     // The cache carries a masked email, plan name, and per-model quota, so keep it private instead
     // of leaving it world-readable under the default umask.
     writeFile: (filePath: string, data: string) =>

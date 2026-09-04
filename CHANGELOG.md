@@ -2,6 +2,32 @@
 - Improve test subprocess fixture portability for Windows (`win32`) environments.
 og
 
+## 0.1.10 — 2026-09-04
+
+- Updated verified compatibility with Antigravity CLI through 1.1.26, covering install, status-line wiring, rendering and the loopback quota probe.
+- Added `doctor`, a read-only self-check: Node version, the command the CLI has wired to its status line, the config file in effect and the resolved `show_icons`, the detected terminal, whether the session is remote, a heuristic Nerd Font scan, and an icon probe. `doctor --json` prints the same report machine-readably for agents verifying an install they just performed.
+- The font scan is reported as a hint and never as a verdict, in both directions: an installed Nerd Font is not necessarily the family the terminal draws with, and Ghostty, WezTerm and kitty ship their own glyph fallback, so a scan that finds nothing can still render every icon. Nothing in the HUD can observe what a terminal actually drew, so the probe needs a person to read it.
+- `doctor` names the config file already in effect when it suggests turning icons off. A `config.json` next to the bundle outranks the one under `~/.config`, so suggesting the home path while such a file exists would have handed users an edit the HUD never reads. Both READMEs carry the same warning.
+- Home-path abbreviation covers a path embedded in a command, so a status line wired as `node <path> statusline` no longer prints the account name, and is skipped when the home directory is `/`, which would otherwise rewrite every absolute path on the system.
+- `doctor`'s human output abbreviates home paths to `~/…`, since that report is what a user pastes into a bug report and the README already asks them not to include local machine paths. `--json` keeps absolute paths for an agent acting on the same machine.
+- `doctor` recognizes kitty and Alacritty, which deliberately do not set `TERM_PROGRAM`, from the variables they do export. Their font-setting hints were previously unreachable.
+- The Nerd Font name pattern matches hyphenated forms such as `Hack-Nerd-Font-Regular.ttf`, which a whitespace-only separator missed.
+- `fc-list` is queried for family names with a raised output limit. The unbounded default could exceed the 1 MB buffer on a font-heavy machine, and that failure would have been reported as "could not scan".
+- Documented that icons rendering as boxes is a terminal font condition, not a plugin fault (#13). The four HUD icons live in the Nerd Font Private Use Area, while the quota reset arrow is standard Unicode and keeps rendering, which is what makes a broken status line look half-working.
+- Rewrote the AI agent install flow around that: send the icon probe with the preview and ask the user what they see, write `show_icons: false` before installing when they report boxes, and verify with `doctor --json` afterwards. Agents are told not to install fonts on the user's behalf, since a font install alone changes nothing without the terminal's own font setting, and cannot change anything at all over SSH.
+
+## 0.1.9 — 2026-09-02
+
+- Updated verified compatibility with Antigravity CLI through 1.1.24.
+- Added session token-cost display from CLI 1.1.21+ (`cost.total_usd`), enabled by default with `show_cost`. Estimates carry `~`; invalid values are omitted. The HUD displays the supplied total without adding subagent cost separately or calculating subscription charges.
+- Cost is the first segment hidden on narrow terminals, preserving directory, branch and quota information that already fits.
+- Recognize both short and `Google AI`-prefixed Pro, Ultra and Free tiers. Unrecognized tiers display `Plan ?` instead of incorrectly claiming Free.
+- Measure terminal columns for CJK, current emoji sequences and combining marks; truncate on grapheme boundaries and strip ANSI/OSC sequences when clipping.
+- Reuse a short-lived, credential-free local `agy` server hint after checking its PID, start time and executable path. Failed, expired or malformed hints fall back to discovery in the same refresh. Quota refresh frequency and same-frame correction are unchanged.
+- Continue discovery when a listener returns unrelated JSON instead of quota data.
+- Added regression coverage for current Gemini, Claude and GPT labels, dual quota windows, config overrides, cost degradation, Unicode width and server-hint recovery.
+- Updated esbuild to 0.28.2, retaining Node.js 18 support and removing the development-server advisory. Runtime dependencies are bundled; their licenses ship in `THIRD_PARTY_NOTICES.md`.
+
 ## 0.1.8
 
 - Support Google AI Ultra plan tier detection and rendering in statusline.
