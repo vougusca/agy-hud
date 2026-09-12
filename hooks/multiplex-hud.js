@@ -1,6 +1,7 @@
 const fs = require('node:fs');
 const { spawnSync } = require('node:child_process');
 const path = require('node:path');
+const os = require('node:os');
 
 // Read the JSON payload from stdin
 const rawPayload = fs.readFileSync(0, 'utf-8');
@@ -8,6 +9,20 @@ const rawPayload = fs.readFileSync(0, 'utf-8');
 // Log the payload to a file for inspection
 // const logPath = path.join(__dirname, 'multiplex-payloads.log');
 // fs.appendFileSync(logPath, rawPayload + '\n\n');
+
+// Check if statusLine is explicitly disabled in settings.json
+try {
+  const home = os.homedir();
+  const settingsPath = path.join(home, '.gemini', 'antigravity-cli', 'settings.json');
+  if (fs.existsSync(settingsPath)) {
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
+    if (settings && settings.statusLine && settings.statusLine.enabled === false) {
+      process.exit(0);
+    }
+  }
+} catch (e) {
+  // Ignore settings read errors
+}
 
 let payload;
 try {
@@ -89,7 +104,8 @@ const defaultLine = parts.join(' | ');
 const hudPath = path.join(__dirname, '..', 'dist', 'agy-hud.js');
 const result = spawnSync('node', [hudPath, 'statusline'], {
   input: rawPayload,
-  encoding: 'utf-8'
+  encoding: 'utf-8',
+  windowsHide: true
 });
 
 // 4. Print default status line, tip on next line, then agy-hud output

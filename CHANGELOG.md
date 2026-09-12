@@ -1,6 +1,11 @@
-# Changel- Add `hooks/multiplex-hud.js` wrapper script for custom statusline multiplexing.
-- Improve test subprocess fixture portability for Windows (`win32`) environments.
-og
+# Changelog
+
+## [Unreleased]
+
+- Fix loopback quota probe TLS handshake errors when querying CLI language server by ingesting `ANTIGRAVITY_LS_ADDRESS` and `ANTIGRAVITY_CSRF_TOKEN`.
+- Prevent erroneous plain HTTP fallbacks against HTTPS endpoints when unauthenticated or rejected by server.
+- Suppress visible Windows console window flashes by adding `windowsHide: true` to background detached spawns and `-WindowStyle Hidden` to PowerShell discovery.
+- Respect `statusLine.enabled: false` in `hooks/multiplex-hud.js` and use `os.homedir()`.
 
 ## 0.1.10 — 2026-09-04
 
