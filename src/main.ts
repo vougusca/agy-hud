@@ -224,7 +224,8 @@ function fcList(): string | null {
       encoding: "utf8",
       timeout: 3000,
       maxBuffer: 8 * 1024 * 1024,
-      stdio: ["ignore", "pipe", "ignore"]
+      stdio: ["ignore", "pipe", "ignore"],
+      windowsHide: true
     });
   } catch {
     return null;
@@ -433,6 +434,7 @@ function triggerBackgroundRefreshIfNeeded(
     const nodePath = process.argv[0];
     const child = spawn(nodePath, [__filename, "quota", "refresh"], {
       detached: true,
+      windowsHide: true,
       stdio: "ignore"
     });
     child.unref();

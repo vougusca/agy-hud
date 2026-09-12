@@ -280,6 +280,39 @@ var import_node_http = __toESM(require("node:http"));
 var import_node_https = __toESM(require("node:https"));
 var import_node_path = __toESM(require("node:path"));
 var import_node_child_process = require("node:child_process");
+function parseEnvServerConfig(env = process.env) {
+  const token = env.ANTIGRAVITY_CSRF_TOKEN || env.GEMINI_CLI_IDE_AUTH_TOKEN || "";
+  if (env.ANTIGRAVITY_LS_ADDRESS) {
+    const raw = env.ANTIGRAVITY_LS_ADDRESS.trim().replace(/\/+$/, "");
+    let protocol;
+    let hostPort = raw;
+    if (raw.startsWith("http://")) {
+      protocol = "http:";
+      hostPort = raw.slice(7);
+    } else if (raw.startsWith("https://")) {
+      protocol = "https:";
+      hostPort = raw.slice(8);
+    }
+    let host = "127.0.0.1";
+    let portStr = hostPort;
+    if (hostPort.includes(":")) {
+      const lastColon = hostPort.lastIndexOf(":");
+      host = hostPort.slice(0, lastColon).replace(/^\[|\]$/g, "") || "127.0.0.1";
+      portStr = hostPort.slice(lastColon + 1);
+    }
+    const port = Number(portStr);
+    if (Number.isInteger(port) && port > 0 && port <= 65535) {
+      return { protocol, host, port, csrfToken: token, source: "ANTIGRAVITY_LS_ADDRESS" };
+    }
+  }
+  if (env.GEMINI_CLI_IDE_SERVER_PORT && /^\d+$/.test(env.GEMINI_CLI_IDE_SERVER_PORT)) {
+    const port = Number(env.GEMINI_CLI_IDE_SERVER_PORT);
+    if (port > 0 && port <= 65535) {
+      return { host: "127.0.0.1", port, csrfToken: token, source: "GEMINI_CLI_IDE_SERVER_PORT" };
+    }
+  }
+  return null;
+}
 function parseLanguageServerInfo(psOutput) {
   for (const line of psOutput.split(/\r?\n/)) {
     if (!line.includes("language_server") || !line.includes("--csrf_token")) {
@@ -294,7 +327,7 @@ function parseLanguageServerInfo(psOutput) {
   }
   return null;
 }
-function parseAgyServerInfos(psOutput) {
+function parseAgyServerInfos(psOutput, defaultToken = "") {
   const infos = [];
   for (const line of psOutput.split(/\r?\n/)) {
     if (!/(^|\s)(?:\/\S+\/)?agy(\s|$)/.test(line)) {
@@ -303,7 +336,7 @@ function parseAgyServerInfos(psOutput) {
     const parts = line.trim().split(/\s+/);
     const pid = parts.length > 1 ? parts[1] : "";
     if (pid !== "" && /^\d+$/.test(pid)) {
-      infos.push({ pid, csrfToken: "", kind: "agy" });
+      infos.push({ pid, csrfToken: defaultToken, kind: "agy" });
     }
   }
   return infos;
@@ -366,23 +399,22 @@ function buildQuotaCache(rawResponse, now) {
   return { cache, summary: lines.join("\n") };
 }
 async function refreshQuota(cachePath, runtime = defaultRuntime()) {
-  const envPort = process.env.GEMINI_CLI_IDE_SERVER_PORT;
-  const envToken = process.env.GEMINI_CLI_IDE_AUTH_TOKEN || "";
-  if (process.platform === "win32" && !envPort) {
-    const isBackground = process.argv.includes("refresh");
-    if (!isBackground && runtime._isDefault) {
-      return { ok: false, message: "Bypassing foreground process discovery on Windows to prevent timeouts." };
-    }
-  }
-  if (envPort && /^\d+$/.test(envPort)) {
-    const port = Number(envPort);
-    const rawResponse = await tryRequest(runtime, port, envToken);
+  const envServer = parseEnvServerConfig(process.env);
+  if (envServer) {
+    const rawResponse = await tryRequest(runtime, envServer.port, envServer.csrfToken, envServer.protocol, envServer.host);
     if (rawResponse) {
       const built = buildQuotaCache(rawResponse, runtime.now());
       if (!built) {
         return { ok: false, message: "GetUserStatus returned malformed quota data." };
       }
-      return saveQuotaCache(cachePath, built, runtime, `using GEMINI_CLI_IDE_SERVER_PORT ${port}`);
+      return saveQuotaCache(cachePath, built, runtime, `using ${envServer.source} ${envServer.port}`);
+    }
+    return { ok: false, message: `Failed to query GetUserStatus from ${envServer.source} at ${envServer.host}:${envServer.port}.` };
+  }
+  if (process.platform === "win32") {
+    const isBackground = process.argv.includes("refresh");
+    if (!isBackground && runtime._isDefault) {
+      return { ok: false, message: "Bypassing foreground process discovery on Windows to prevent timeouts." };
     }
   }
   const hint = loadServerHint(cachePath, runtime);
@@ -398,8 +430,9 @@ async function refreshQuota(cachePath, runtime = defaultRuntime()) {
   } catch (err) {
     return { ok: false, message: `Failed to list processes: ${err instanceof Error ? err.message : String(err)}` };
   }
+  const defaultAgyToken = process.env.ANTIGRAVITY_CSRF_TOKEN || process.env.GEMINI_CLI_IDE_AUTH_TOKEN || "";
   const languageServer = parseLanguageServerInfo(psOutput);
-  const candidates = [...parseAgyServerInfos(psOutput), ...languageServer ? [languageServer] : []];
+  const candidates = [...parseAgyServerInfos(psOutput, defaultAgyToken), ...languageServer ? [languageServer] : []];
   if (candidates.length === 0) {
     return { ok: false, message: "No running language_server or agy quota server found." };
   }
@@ -475,9 +508,9 @@ function saveServerHint(cachePath, hint, runtime) {
   } catch {
   }
 }
-async function tryRequest(runtime, port, csrfToken) {
+async function tryRequest(runtime, port, csrfToken, protocol, hostname) {
   try {
-    return await runtime.request(port, csrfToken);
+    return await runtime.request(port, csrfToken, protocol, hostname);
   } catch {
     return null;
   }
@@ -502,10 +535,14 @@ function defaultRuntime() {
     now: () => /* @__PURE__ */ new Date(),
     readFile: (filePath) => import_node_fs3.default.readFileSync(filePath, "utf8"),
     processIdentity: (pid) => {
+      if (isWin) {
+        return null;
+      }
       const identity = (0, import_node_child_process.execFileSync)("ps", ["-p", pid, "-o", "lstart=", "-o", "comm="], {
         encoding: "utf8",
         timeout: 1e3,
-        env: { ...process.env, LC_ALL: "C" }
+        env: { ...process.env, LC_ALL: "C" },
+        windowsHide: true
       }).trim();
       const match = identity.match(/^\w{3}\s+\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4}\s+(.+)$/);
       return match && import_node_path.default.basename(match[1]) === "agy" ? identity : null;
@@ -519,7 +556,11 @@ function defaultRuntime() {
 function windowsPs() {
   try {
     const script = `Get-CimInstance Win32_Process -Filter "Name='language_server.exe' or Name='agy.exe'" | ForEach-Object { $_.ProcessId.ToString() + "\`t" + $_.CommandLine }`;
-    const cimOut = (0, import_node_child_process.execFileSync)("powershell", ["-NoProfile", "-Command", script], { encoding: "utf8", windowsHide: true });
+    const cimOut = (0, import_node_child_process.execFileSync)("powershell", ["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script], {
+      encoding: "utf8",
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "ignore"]
+    });
     const lines = [];
     cimOut.split(/\r?\n/).forEach((line) => {
       const parts = line.trim().split("	");
@@ -576,7 +617,7 @@ function windowsLsof(pid) {
     throw new Error(`netstat failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
-async function queryLanguageServer(port, csrfToken) {
+async function queryLanguageServer(port, csrfToken, protocol, hostname = "127.0.0.1") {
   const endpoint = `/exa.language_server_pb.LanguageServerService/GetUserStatus`;
   const headers = {
     "Content-Type": "application/json",
@@ -585,49 +626,81 @@ async function queryLanguageServer(port, csrfToken) {
   if (csrfToken !== "") {
     headers["X-Codeium-Csrf-Token"] = csrfToken;
   }
+  if (protocol === "http:") {
+    const outcome = await requestJson(import_node_http.default, {
+      protocol: "http:",
+      hostname,
+      port,
+      path: endpoint,
+      method: "POST",
+      headers
+    });
+    return outcome.data;
+  }
+  if (protocol === "https:") {
+    const outcome = await requestJson(import_node_https.default, {
+      protocol: "https:",
+      hostname,
+      port,
+      path: endpoint,
+      method: "POST",
+      headers,
+      rejectUnauthorized: false
+    });
+    return outcome.data;
+  }
   const httpsResult = await requestJson(import_node_https.default, {
     protocol: "https:",
-    hostname: "127.0.0.1",
+    hostname,
     port,
     path: endpoint,
     method: "POST",
     headers,
     rejectUnauthorized: false
   });
-  if (httpsResult !== null) {
-    return httpsResult;
+  if (httpsResult.data !== null) {
+    return httpsResult.data;
   }
-  return requestJson(import_node_http.default, {
-    protocol: "http:",
-    hostname: "127.0.0.1",
-    port,
-    path: endpoint,
-    method: "POST",
-    headers
-  });
+  if (httpsResult.tlsError) {
+    const httpResult = await requestJson(import_node_http.default, {
+      protocol: "http:",
+      hostname,
+      port,
+      path: endpoint,
+      method: "POST",
+      headers
+    });
+    return httpResult.data;
+  }
+  return null;
 }
 function requestJson(mod, options) {
   return new Promise((resolve) => {
+    let responded = false;
     const req = mod.request(options, (res) => {
+      responded = true;
       const chunks = [];
       res.on("data", (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
       res.on("end", () => {
-        if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
-          resolve(null);
+        const httpStatus = res.statusCode;
+        if (!httpStatus || httpStatus < 200 || httpStatus >= 300) {
+          resolve({ data: null, tlsError: false, httpStatus });
           return;
         }
         try {
-          resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+          resolve({ data: JSON.parse(Buffer.concat(chunks).toString("utf8")), tlsError: false, httpStatus });
         } catch {
-          resolve(null);
+          resolve({ data: null, tlsError: false, httpStatus });
         }
       });
     });
     req.setTimeout(5e3, () => {
       req.destroy();
-      resolve(null);
+      resolve({ data: null, tlsError: !responded });
     });
-    req.on("error", () => resolve(null));
+    req.on("error", () => {
+      resolve({ data: null, tlsError: !responded });
+    });
     req.write("{}");
     req.end();
   });
@@ -1755,7 +1828,8 @@ function fcList() {
       encoding: "utf8",
       timeout: 3e3,
       maxBuffer: 8 * 1024 * 1024,
-      stdio: ["ignore", "pipe", "ignore"]
+      stdio: ["ignore", "pipe", "ignore"],
+      windowsHide: true
     });
   } catch {
     return null;
@@ -1939,6 +2013,7 @@ function triggerBackgroundRefreshIfNeeded(cachePath, cache, payload = null, repa
     const nodePath = process.argv[0];
     const child = (0, import_node_child_process2.spawn)(nodePath, [__filename, "quota", "refresh"], {
       detached: true,
+      windowsHide: true,
       stdio: "ignore"
     });
     child.unref();

@@ -14,12 +14,57 @@ export interface ProbeRuntime {
   _isDefault?: boolean;
   ps(): string;
   lsof(pid: string): string;
-  request(port: number, csrfToken: string): Promise<unknown | null>;
+  request(port: number, csrfToken: string, protocol?: "http:" | "https:", hostname?: string): Promise<unknown | null>;
   now(): Date;
   writeFile(filePath: string, data: string): void;
   mkdir(dirPath: string): void;
   readFile?(filePath: string): string;
   processIdentity?(pid: string): string | null;
+}
+
+export interface EnvServerConfig {
+  protocol?: "http:" | "https:";
+  host: string;
+  port: number;
+  csrfToken: string;
+  source: string;
+}
+
+export function parseEnvServerConfig(env: NodeJS.ProcessEnv = process.env): EnvServerConfig | null {
+  const token = env.ANTIGRAVITY_CSRF_TOKEN || env.GEMINI_CLI_IDE_AUTH_TOKEN || "";
+
+  if (env.ANTIGRAVITY_LS_ADDRESS) {
+    const raw = env.ANTIGRAVITY_LS_ADDRESS.trim().replace(/\/+$/, "");
+    let protocol: "http:" | "https:" | undefined;
+    let hostPort = raw;
+    if (raw.startsWith("http://")) {
+      protocol = "http:";
+      hostPort = raw.slice(7);
+    } else if (raw.startsWith("https://")) {
+      protocol = "https:";
+      hostPort = raw.slice(8);
+    }
+    let host = "127.0.0.1";
+    let portStr = hostPort;
+    if (hostPort.includes(":")) {
+      const lastColon = hostPort.lastIndexOf(":");
+      host = hostPort.slice(0, lastColon).replace(/^\[|\]$/g, "") || "127.0.0.1";
+      portStr = hostPort.slice(lastColon + 1);
+    }
+    const port = Number(portStr);
+    if (Number.isInteger(port) && port > 0 && port <= 65535) {
+      return { protocol, host, port, csrfToken: token, source: "ANTIGRAVITY_LS_ADDRESS" };
+    }
+  }
+
+  if (env.GEMINI_CLI_IDE_SERVER_PORT && /^\d+$/.test(env.GEMINI_CLI_IDE_SERVER_PORT)) {
+    const port = Number(env.GEMINI_CLI_IDE_SERVER_PORT);
+    if (port > 0 && port <= 65535) {
+      return { host: "127.0.0.1", port, csrfToken: token, source: "GEMINI_CLI_IDE_SERVER_PORT" };
+    }
+  }
+
+  return null;
 }
 
 interface ServerHint {
@@ -51,7 +96,7 @@ export function parseLanguageServerInfo(psOutput: string): LanguageServerInfo | 
   return null;
 }
 
-export function parseAgyServerInfos(psOutput: string): LanguageServerInfo[] {
+export function parseAgyServerInfos(psOutput: string, defaultToken = ""): LanguageServerInfo[] {
   const infos: LanguageServerInfo[] = [];
   for (const line of psOutput.split(/\r?\n/)) {
     if (!/(^|\s)(?:\/\S+\/)?agy(\s|$)/.test(line)) {
@@ -60,7 +105,7 @@ export function parseAgyServerInfos(psOutput: string): LanguageServerInfo[] {
     const parts = line.trim().split(/\s+/);
     const pid = parts.length > 1 ? parts[1] : "";
     if (pid !== "" && /^\d+$/.test(pid)) {
-      infos.push({ pid, csrfToken: "", kind: "agy" });
+      infos.push({ pid, csrfToken: defaultToken, kind: "agy" });
     }
   }
   return infos;
@@ -128,25 +173,24 @@ export function buildQuotaCache(rawResponse: unknown, now: Date): { cache: unkno
 }
 
 export async function refreshQuota(cachePath: string, runtime: ProbeRuntime = defaultRuntime()): Promise<RefreshResult> {
-  const envPort = process.env.GEMINI_CLI_IDE_SERVER_PORT;
-  const envToken = process.env.GEMINI_CLI_IDE_AUTH_TOKEN || "";
+  const envServer = parseEnvServerConfig(process.env);
 
-  if (process.platform === "win32" && !envPort) {
-    const isBackground = process.argv.includes("refresh");
-    if (!isBackground && runtime._isDefault) {
-      return { ok: false, message: "Bypassing foreground process discovery on Windows to prevent timeouts." };
-    }
-  }
-
-  if (envPort && /^\d+$/.test(envPort)) {
-    const port = Number(envPort);
-    const rawResponse = await tryRequest(runtime, port, envToken);
+  if (envServer) {
+    const rawResponse = await tryRequest(runtime, envServer.port, envServer.csrfToken, envServer.protocol, envServer.host);
     if (rawResponse) {
       const built = buildQuotaCache(rawResponse, runtime.now());
       if (!built) {
         return { ok: false, message: "GetUserStatus returned malformed quota data." };
       }
-      return saveQuotaCache(cachePath, built, runtime, `using GEMINI_CLI_IDE_SERVER_PORT ${port}`);
+      return saveQuotaCache(cachePath, built, runtime, `using ${envServer.source} ${envServer.port}`);
+    }
+    return { ok: false, message: `Failed to query GetUserStatus from ${envServer.source} at ${envServer.host}:${envServer.port}.` };
+  }
+
+  if (process.platform === "win32") {
+    const isBackground = process.argv.includes("refresh");
+    if (!isBackground && runtime._isDefault) {
+      return { ok: false, message: "Bypassing foreground process discovery on Windows to prevent timeouts." };
     }
   }
 
@@ -166,8 +210,9 @@ export async function refreshQuota(cachePath: string, runtime: ProbeRuntime = de
   } catch (err) {
     return { ok: false, message: `Failed to list processes: ${err instanceof Error ? err.message : String(err)}` };
   }
+  const defaultAgyToken = process.env.ANTIGRAVITY_CSRF_TOKEN || process.env.GEMINI_CLI_IDE_AUTH_TOKEN || "";
   const languageServer = parseLanguageServerInfo(psOutput);
-  const candidates = [...parseAgyServerInfos(psOutput), ...(languageServer ? [languageServer] : [])];
+  const candidates = [...parseAgyServerInfos(psOutput, defaultAgyToken), ...(languageServer ? [languageServer] : [])];
   if (candidates.length === 0) {
     return { ok: false, message: "No running language_server or agy quota server found." };
   }
@@ -252,9 +297,15 @@ function saveServerHint(cachePath: string, hint: ServerHint | null, runtime: Pro
   }
 }
 
-async function tryRequest(runtime: ProbeRuntime, port: number, csrfToken: string): Promise<unknown | null> {
+async function tryRequest(
+  runtime: ProbeRuntime,
+  port: number,
+  csrfToken: string,
+  protocol?: "http:" | "https:",
+  hostname?: string
+): Promise<unknown | null> {
   try {
-    return await runtime.request(port, csrfToken);
+    return await runtime.request(port, csrfToken, protocol, hostname);
   } catch {
     return null;
   }
@@ -280,8 +331,11 @@ function defaultRuntime(): ProbeRuntime {
     now: () => new Date(),
     readFile: filePath => fs.readFileSync(filePath, "utf8"),
     processIdentity: pid => {
+      if (isWin) {
+        return null;
+      }
       const identity = execFileSync("ps", ["-p", pid, "-o", "lstart=", "-o", "comm="], {
-        encoding: "utf8", timeout: 1000, env: { ...process.env, LC_ALL: "C" }
+        encoding: "utf8", timeout: 1000, env: { ...process.env, LC_ALL: "C" }, windowsHide: true
       }).trim();
       const match = identity.match(/^\w{3}\s+\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4}\s+(.+)$/);
       return match && path.basename(match[1]) === "agy" ? identity : null;
@@ -297,7 +351,11 @@ function defaultRuntime(): ProbeRuntime {
 function windowsPs(): string {
   try {
     const script = `Get-CimInstance Win32_Process -Filter "Name='language_server.exe' or Name='agy.exe'" | ForEach-Object { $_.ProcessId.ToString() + "` + "`t" + `" + $_.CommandLine }`;
-    const cimOut = execFileSync("powershell", ["-NoProfile", "-Command", script], { encoding: "utf8", windowsHide: true });
+    const cimOut = execFileSync("powershell", ["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script], {
+      encoding: "utf8",
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "ignore"]
+    });
     const lines: string[] = [];
     cimOut.split(/\r?\n/).forEach(line => {
       const parts = line.trim().split("\t");
@@ -356,7 +414,18 @@ function windowsLsof(pid: string): string {
   }
 }
 
-async function queryLanguageServer(port: number, csrfToken: string): Promise<unknown | null> {
+interface RequestOutcome {
+  data: unknown | null;
+  tlsError: boolean;
+  httpStatus?: number;
+}
+
+async function queryLanguageServer(
+  port: number,
+  csrfToken: string,
+  protocol?: "http:" | "https:",
+  hostname = "127.0.0.1"
+): Promise<unknown | null> {
   const endpoint = `/exa.language_server_pb.LanguageServerService/GetUserStatus`;
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -365,53 +434,93 @@ async function queryLanguageServer(port: number, csrfToken: string): Promise<unk
   if (csrfToken !== "") {
     headers["X-Codeium-Csrf-Token"] = csrfToken;
   }
+
+  if (protocol === "http:") {
+    const outcome = await requestJson(http, {
+      protocol: "http:",
+      hostname,
+      port,
+      path: endpoint,
+      method: "POST",
+      headers
+    });
+    return outcome.data;
+  }
+
+  if (protocol === "https:") {
+    const outcome = await requestJson(https, {
+      protocol: "https:",
+      hostname,
+      port,
+      path: endpoint,
+      method: "POST",
+      headers,
+      rejectUnauthorized: false
+    });
+    return outcome.data;
+  }
+
   const httpsResult = await requestJson(https, {
     protocol: "https:",
-    hostname: "127.0.0.1",
+    hostname,
     port,
     path: endpoint,
     method: "POST",
     headers,
     rejectUnauthorized: false
   });
-  if (httpsResult !== null) {
-    return httpsResult;
+  if (httpsResult.data !== null) {
+    return httpsResult.data;
   }
-  return requestJson(http, {
-    protocol: "http:",
-    hostname: "127.0.0.1",
-    port,
-    path: endpoint,
-    method: "POST",
-    headers
-  });
+
+  // Only fall back to plain HTTP if HTTPS failed with a TLS/connection error before receiving any HTTP response.
+  // If the HTTPS server actually answered (e.g. 401 unauthenticated, 403, 404, 500), it IS an HTTPS server;
+  // retrying over plain HTTP to an HTTPS server triggers "client sent an HTTP request to an HTTPS server" TLS handshake errors.
+  if (httpsResult.tlsError) {
+    const httpResult = await requestJson(http, {
+      protocol: "http:",
+      hostname,
+      port,
+      path: endpoint,
+      method: "POST",
+      headers
+    });
+    return httpResult.data;
+  }
+
+  return null;
 }
 
 function requestJson(
   mod: typeof http | typeof https,
   options: http.RequestOptions & { rejectUnauthorized?: boolean }
-): Promise<unknown | null> {
+): Promise<RequestOutcome> {
   return new Promise(resolve => {
+    let responded = false;
     const req = mod.request(options, res => {
+      responded = true;
       const chunks: Buffer[] = [];
       res.on("data", chunk => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
       res.on("end", () => {
-        if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
-          resolve(null);
+        const httpStatus = res.statusCode;
+        if (!httpStatus || httpStatus < 200 || httpStatus >= 300) {
+          resolve({ data: null, tlsError: false, httpStatus });
           return;
         }
         try {
-          resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+          resolve({ data: JSON.parse(Buffer.concat(chunks).toString("utf8")), tlsError: false, httpStatus });
         } catch {
-          resolve(null);
+          resolve({ data: null, tlsError: false, httpStatus });
         }
       });
     });
     req.setTimeout(5000, () => {
       req.destroy();
-      resolve(null);
+      resolve({ data: null, tlsError: !responded });
     });
-    req.on("error", () => resolve(null));
+    req.on("error", () => {
+      resolve({ data: null, tlsError: !responded });
+    });
     req.write("{}");
     req.end();
   });

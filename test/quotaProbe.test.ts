@@ -1,6 +1,27 @@
-import test from "node:test";
+import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
-import { buildQuotaCache, parseAgyServerInfos, parseLanguageServerInfo, parseListeningPorts, refreshQuota } from "../src/quotaProbe";
+import { buildQuotaCache, parseAgyServerInfos, parseEnvServerConfig, parseLanguageServerInfo, parseListeningPorts, refreshQuota } from "../src/quotaProbe";
+
+const savedEnv = {
+  ANTIGRAVITY_LS_ADDRESS: process.env.ANTIGRAVITY_LS_ADDRESS,
+  ANTIGRAVITY_CSRF_TOKEN: process.env.ANTIGRAVITY_CSRF_TOKEN,
+  GEMINI_CLI_IDE_SERVER_PORT: process.env.GEMINI_CLI_IDE_SERVER_PORT,
+  GEMINI_CLI_IDE_AUTH_TOKEN: process.env.GEMINI_CLI_IDE_AUTH_TOKEN
+};
+
+before(() => {
+  delete process.env.ANTIGRAVITY_LS_ADDRESS;
+  delete process.env.ANTIGRAVITY_CSRF_TOKEN;
+  delete process.env.GEMINI_CLI_IDE_SERVER_PORT;
+  delete process.env.GEMINI_CLI_IDE_AUTH_TOKEN;
+});
+
+after(() => {
+  for (const [k, v] of Object.entries(savedEnv)) {
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
+});
 
 test("parseLanguageServerInfo extracts pid and csrf token", () => {
   const ps = [
@@ -306,6 +327,140 @@ test("refreshQuota queries env port directly without process discovery if set", 
     else process.env.GEMINI_CLI_IDE_SERVER_PORT = oldPort;
     if (oldToken === undefined) delete process.env.GEMINI_CLI_IDE_AUTH_TOKEN;
     else process.env.GEMINI_CLI_IDE_AUTH_TOKEN = oldToken;
+  }
+});
+
+test("parseEnvServerConfig parses ANTIGRAVITY_LS_ADDRESS and csrf token", () => {
+  assert.deepEqual(parseEnvServerConfig({
+    ANTIGRAVITY_LS_ADDRESS: "localhost:4491",
+    ANTIGRAVITY_CSRF_TOKEN: "test-token"
+  }), {
+    protocol: undefined,
+    host: "localhost",
+    port: 4491,
+    csrfToken: "test-token",
+    source: "ANTIGRAVITY_LS_ADDRESS"
+  });
+
+  assert.deepEqual(parseEnvServerConfig({
+    ANTIGRAVITY_LS_ADDRESS: "http://127.0.0.1:8080",
+    ANTIGRAVITY_CSRF_TOKEN: "tok"
+  }), {
+    protocol: "http:",
+    host: "127.0.0.1",
+    port: 8080,
+    csrfToken: "tok",
+    source: "ANTIGRAVITY_LS_ADDRESS"
+  });
+
+  assert.deepEqual(parseEnvServerConfig({
+    ANTIGRAVITY_LS_ADDRESS: "https://127.0.0.1:4490"
+  }), {
+    protocol: "https:",
+    host: "127.0.0.1",
+    port: 4490,
+    csrfToken: "",
+    source: "ANTIGRAVITY_LS_ADDRESS"
+  });
+
+  // Trailing slashes are stripped
+  assert.deepEqual(parseEnvServerConfig({
+    ANTIGRAVITY_LS_ADDRESS: "http://localhost:4491/",
+    ANTIGRAVITY_CSRF_TOKEN: "test-token"
+  }), {
+    protocol: "http:",
+    host: "localhost",
+    port: 4491,
+    csrfToken: "test-token",
+    source: "ANTIGRAVITY_LS_ADDRESS"
+  });
+
+  assert.deepEqual(parseEnvServerConfig({
+    ANTIGRAVITY_LS_ADDRESS: "https://127.0.0.1:4490///"
+  }), {
+    protocol: "https:",
+    host: "127.0.0.1",
+    port: 4490,
+    csrfToken: "",
+    source: "ANTIGRAVITY_LS_ADDRESS"
+  });
+});
+
+test("parseEnvServerConfig rejects invalid ports and non-numeric values", () => {
+  for (const invalid of [
+    "http://localhost:0",
+    "http://localhost:70000",
+    "http://localhost:-1",
+    "http://localhost:abc",
+    "http://localhost",
+    "localhost:65536"
+  ]) {
+    assert.equal(parseEnvServerConfig({ ANTIGRAVITY_LS_ADDRESS: invalid }), null);
+  }
+
+  for (const invalidPort of ["0", "70000", "-1", "abc", "65536"]) {
+    assert.equal(parseEnvServerConfig({ GEMINI_CLI_IDE_SERVER_PORT: invalidPort }), null);
+  }
+});
+
+test("refreshQuota queries ANTIGRAVITY_LS_ADDRESS directly without process discovery", async () => {
+  process.env.ANTIGRAVITY_LS_ADDRESS = "http://localhost:4491";
+  process.env.ANTIGRAVITY_CSRF_TOKEN = "antigravity-token";
+
+  const writes: Record<string, string> = {};
+  let psCalled = false;
+  let requestedPort: number | null = null;
+  let requestedToken: string | null = null;
+  let requestedProto: string | undefined;
+
+  try {
+    const result = await refreshQuota("/tmp/quota_cache.json", {
+      ps: () => { psCalled = true; return ""; },
+      lsof: () => "",
+      request: async (port, token, proto) => {
+        requestedPort = port;
+        requestedToken = token;
+        requestedProto = proto;
+        return sampleRawStatus("Gemini 3.7 Flash (High)", 0.35);
+      },
+      now: () => new Date("2026-05-20T04:00:00Z"),
+      writeFile: (filePath, data) => { writes[filePath] = data; },
+      mkdir: () => {}
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(psCalled, false);
+    assert.equal(requestedPort, 4491);
+    assert.equal(requestedToken, "antigravity-token");
+    assert.equal(requestedProto, "http:");
+    assert.match(writes["/tmp/quota_cache.json"], /"remainingFraction": 0\.35/);
+  } finally {
+    delete process.env.ANTIGRAVITY_LS_ADDRESS;
+    delete process.env.ANTIGRAVITY_CSRF_TOKEN;
+  }
+});
+
+test("refreshQuota does not fall back to process discovery if ANTIGRAVITY_LS_ADDRESS request fails", async () => {
+  process.env.ANTIGRAVITY_LS_ADDRESS = "http://localhost:4491";
+  process.env.ANTIGRAVITY_CSRF_TOKEN = "antigravity-token";
+
+  let psCalled = false;
+  try {
+    const result = await refreshQuota("/tmp/quota_cache.json", {
+      ps: () => { psCalled = true; return ""; },
+      lsof: () => "",
+      request: async () => null,
+      now: () => new Date("2026-05-20T04:00:00Z"),
+      writeFile: () => {},
+      mkdir: () => {}
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(psCalled, false, "process discovery must not be run when env server is configured");
+    assert.match(result.message, /Failed to query GetUserStatus from ANTIGRAVITY_LS_ADDRESS/);
+  } finally {
+    delete process.env.ANTIGRAVITY_LS_ADDRESS;
+    delete process.env.ANTIGRAVITY_CSRF_TOKEN;
   }
 });
 
