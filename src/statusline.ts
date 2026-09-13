@@ -138,13 +138,14 @@ interface OfficialQuotaBucket {
   reset_in_seconds?: number;
 }
 
-interface QuotaWindowDisplay {
+export interface QuotaWindowDisplay {
   label: string;
   usagePct: number;
   reset: string;
+  resetInSeconds?: number;
 }
 
-interface QuotaDisplay {
+export interface QuotaDisplay {
   usagePct: number;
   reset: string;
   hasQuota: boolean;
@@ -252,7 +253,7 @@ export function renderSubagentLine(stats: AgentTokenStats[], width: number, colo
     activeTokens: 0,
     cumulativeTokens: 0,
   };
-  const subagents = stats.filter(s => s.index > 0);
+  const subagents = stats.filter(s => s.index > 0).sort((a, b) => b.index - a.index);
   const rootBadge = formatRootBadge(root, colors);
 
   if (subagents.length === 0) {
@@ -307,7 +308,134 @@ export function renderSubagentLine(stats: AgentTokenStats[], width: number, colo
   return fit(tier4, width);
 }
 
-function renderMultiline(
+export function formatResetTenth(seconds?: number): string {
+  if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds <= 0) {
+    return "";
+  }
+  if (seconds < 3600) {
+    const mins = Math.max(1, Math.round(seconds / 60));
+    if (mins >= 60) return "1.0h";
+    return `${mins}m`;
+  }
+  if (seconds < 86400) {
+    const hours = (seconds / 3600).toFixed(1);
+    if (hours === "24.0") return "1.0d";
+    return `${hours}h`;
+  }
+  return `${(seconds / 86400).toFixed(1)}d`;
+}
+
+export function formatQuotaSegments(quota: QuotaDisplay, config: Config, includeReset: boolean): string[] {
+  if (!quota.hasQuota || quota.windows.length === 0) {
+    const part1 = `${colorize("5h", colorCyan, config.color)} ${colorize("--", colorMuted, config.color)}`;
+    const part2 = `${colorize("W", colorCyan, config.color)} ${colorize("--", colorMuted, config.color)}`;
+    return [part1, part2];
+  }
+
+  return quota.windows.map(window => {
+    const label = colorize(window.label || "5h", colorCyan, config.color);
+    const val = config.usageValue === "remaining" ? 100 - window.usagePct : window.usagePct;
+    const value = colorize(`${val.toFixed(1)}%`, percentageColor(window.usagePct), config.color);
+    let resetStr = "";
+    if (includeReset && window.resetInSeconds) {
+      const duration = formatResetTenth(window.resetInSeconds);
+      if (duration !== "") {
+        resetStr = colorize(`(${duration})`, colorMuted, config.color);
+      }
+    }
+    return resetStr !== "" ? `${label} ${value} ${resetStr}` : `${label} ${value}`;
+  });
+}
+
+export function formatQuotaChip(quota: QuotaDisplay, config: Config, includeReset: boolean): string {
+  const openBracket = colorize("[", colorMuted, config.color);
+  const closeBracket = colorize("]", colorMuted, config.color);
+  const sep = ` ${colorize("|", colorMuted, config.color)} `;
+  return `${openBracket}${formatQuotaSegments(quota, config, includeReset).join(sep)}${closeBracket}`;
+}
+
+export function renderUnifiedLine2(
+  payload: Payload,
+  config: Config,
+  width: number,
+  _quota?: QuotaDisplay,
+  subagents?: SubagentTrackerResult | null
+): string {
+  const rootAgent: AgentTokenStats = subagents?.agents.find(s => s.index === 0) ?? {
+    index: 0,
+    id: payload.conversation_id || "",
+    role: "root",
+    status: payload.agent_state || "idle",
+    isRunning: false,
+    activeTokens: payload.context_window?.total_input_tokens ?? 0,
+    cumulativeTokens: (payload.context_window?.total_input_tokens ?? 0) + (payload.context_window?.total_output_tokens ?? 0),
+  };
+  const colors = config.color;
+  const rootBadge = formatRootBadge(rootAgent, colors);
+  const subagentsList = (config.showSubagents !== false && subagents?.agents
+    ? subagents.agents.filter(s => s.index > 0).sort((a, b) => b.index - a.index)
+    : []) as AgentTokenStats[];
+
+  const activeSubagents = subagentsList.filter(s => s.isRunning);
+  const hasActive = (subagents?.hasActiveSubagents ?? activeSubagents.length > 0) && activeSubagents.length > 0;
+
+  // When no subagents are active, Line 2 displays: [◆ active/cum]
+  if (!hasActive || subagentsList.length === 0) {
+    if (visibleLen(rootBadge) <= width) {
+      return rootBadge;
+    }
+    return fit(rootBadge, width);
+  }
+
+  // Tier 1 (full roles): Root + All subagents (full role)
+  const tier1Parts = [rootBadge, ...subagentsList.map(s => formatSubagentBadge(s, true, colors))];
+  const tier1 = tier1Parts.join(" ");
+  if (visibleLen(tier1) <= width) {
+    return tier1;
+  }
+
+  // Tier 2 (compact roles): Root + All subagents (compact role)
+  const tier2Parts = [rootBadge, ...subagentsList.map(s => formatSubagentBadge(s, false, colors))];
+  const tier2 = tier2Parts.join(" ");
+  if (visibleLen(tier2) <= width) {
+    return tier2;
+  }
+
+  // Tier 3 (active priority): Root + Active subagents (full role or compact) + [+N idle] badge
+  const idleCount = subagentsList.length - activeSubagents.length;
+  const idleBadge = idleCount > 0 ? colorize(`[+${idleCount} idle]`, colorMuted, colors) : "";
+
+  const tier3Parts = [rootBadge, ...activeSubagents.map(s => formatSubagentBadge(s, true, colors))];
+  if (idleBadge) tier3Parts.push(idleBadge);
+  const tier3 = tier3Parts.join(" ");
+  if (visibleLen(tier3) <= width) {
+    return tier3;
+  }
+
+  const tier3CompactParts = [rootBadge, ...activeSubagents.map(s => formatSubagentBadge(s, false, colors))];
+  if (idleBadge) tier3CompactParts.push(idleBadge);
+  const tier3Compact = tier3CompactParts.join(" ");
+  if (visibleLen(tier3Compact) <= width) {
+    return tier3Compact;
+  }
+
+  // Tier 4 (active count): Root + [N active] badge
+  const activeBadge = colorize(`[${activeSubagents.length} active]`, colorGreen, colors);
+  const tier4Parts = [rootBadge, activeBadge];
+  const tier4 = tier4Parts.join(" ");
+  if (visibleLen(tier4) <= width) {
+    return tier4;
+  }
+
+  // Tier 5 (root badge alone): Root badge alone
+  if (visibleLen(rootBadge) <= width) {
+    return rootBadge;
+  }
+
+  return fit(rootBadge, width);
+}
+
+export function renderMultiline(
   payload: Payload,
   config: Config,
   width: number,
@@ -318,37 +446,74 @@ function renderMultiline(
   stateLabel: string,
   subagents?: SubagentTrackerResult | null
 ): string {
-  const line1Parts = [modelSegment];
-  if (config.showCWD && payload.cwd) {
-    line1Parts.push(colorize(withIcon(config, " ", "") + path.basename(payload.cwd), colorYellow, config.color));
-  }
-  if (config.showGitBranch && branch !== "") {
-    line1Parts.push(colorize(renderGitSegment(branch, config), colorGit, config.color));
-  }
+  const cwdText = config.showCWD && payload.cwd ? colorize(withIcon(config, " ", "") + path.basename(payload.cwd), colorYellow, config.color) : "";
+  const gitText = config.showGitBranch && branch !== "" ? colorize(renderGitSegment(branch, config), colorGit, config.color) : "";
   const stateText = config.showAgentState ? colorize(stateLabel, stateColor(stateLabel), config.color) : "";
-  line1Parts.push(stateText);
   const costText = renderCost(payload.cost, config);
-  let line1 = joinHeader(...line1Parts, costText);
-  if (visibleLen(line1) > width) {
-    line1 = joinHeader(...line1Parts);
+
+  let line1: string;
+  if (config.line2Style === "unified") {
+    const quotaWithReset = formatQuotaSegments(quota, config, true);
+    const quotaNoReset = formatQuotaSegments(quota, config, false);
+
+    // Tier 1: Quota with reset + modelSegment + cwd + git + state + cost
+    line1 = joinHeader(...quotaWithReset, modelSegment, cwdText, gitText, stateText, costText);
+    if (visibleLen(line1) > width) {
+      // Tier 2: Quota without reset + modelSegment + cwd + git + state + cost
+      line1 = joinHeader(...quotaNoReset, modelSegment, cwdText, gitText, stateText, costText);
+    }
+    if (visibleLen(line1) > width) {
+      // Tier 3: Quota without reset + modelSegment + cwd + git + state
+      line1 = joinHeader(...quotaNoReset, modelSegment, cwdText, gitText, stateText);
+    }
+    if (visibleLen(line1) > width) {
+      // Tier 4: Quota without reset + modelSegment + git + state
+      line1 = joinHeader(...quotaNoReset, modelSegment, gitText, stateText);
+    }
+    if (visibleLen(line1) > width) {
+      // Tier 5: Quota without reset + modelSegment + state
+      line1 = joinHeader(...quotaNoReset, modelSegment, stateText);
+    }
+    if (visibleLen(line1) > width) {
+      // Tier 6: modelSegment + state
+      line1 = joinHeader(modelSegment, stateText);
+    }
+    if (visibleLen(line1) > width) {
+      // Tier 7: modelSegment
+      line1 = modelSegment;
+    }
+    // Tier 8: fit(modelSegment, width)
+    line1 = fit(line1, width);
+  } else {
+    const line1Parts = [modelSegment];
+    if (cwdText) line1Parts.push(cwdText);
+    if (gitText) line1Parts.push(gitText);
+    if (stateText) line1Parts.push(stateText);
+    line1 = joinHeader(...line1Parts, costText);
+    if (visibleLen(line1) > width) {
+      line1 = joinHeader(...line1Parts);
+    }
+    if (visibleLen(line1) > width) {
+      line1 = joinHeader(modelSegment, gitText, stateText);
+    }
+    if (visibleLen(line1) > width) {
+      line1 = joinHeader(modelSegment, stateText);
+    }
+    if (visibleLen(line1) > width) {
+      line1 = modelSegment;
+    }
+    line1 = fit(line1, width);
   }
-  if (visibleLen(line1) > width) {
-    const git = config.showGitBranch && branch !== "" ? colorize(renderGitSegment(branch, config), colorGit, config.color) : "";
-    line1 = joinHeader(modelSegment, git, stateText);
-  }
-  if (visibleLen(line1) > width) {
-    line1 = joinHeader(modelSegment, stateText);
-  }
-  if (visibleLen(line1) > width) {
-    line1 = modelSegment;
-  }
-  line1 = fit(line1, width);
 
   let line2: string;
-  if (config.showSubagents !== false && subagents && subagents.hasActiveSubagents) {
-    line2 = renderSubagentLine(subagents.agents, width, config.color);
+  if (config.line2Style === "classic") {
+    if (config.showSubagents !== false && subagents && subagents.hasActiveSubagents) {
+      line2 = renderSubagentLine(subagents.agents, width, config.color);
+    } else {
+      line2 = renderResourceLine(payload, config, width, ctxPct, quota);
+    }
   } else {
-    line2 = renderResourceLine(payload, config, width, ctxPct, quota);
+    line2 = renderUnifiedLine2(payload, config, width, quota, subagents);
   }
   return `${line1}\n${line2}`;
 }
@@ -419,7 +584,7 @@ function renderSingleLine(
 ): string {
   let subagentBadge = "";
   if (config.showSubagents !== false && subagents?.hasActiveSubagents) {
-    const active = subagents.agents.filter(a => a.index > 0 && a.isRunning);
+    const active = subagents.agents.filter(a => a.index > 0 && a.isRunning).sort((a, b) => b.index - a.index);
     if (active.length === 1) {
       const dot = colorize("●", colorGreen, config.color);
       subagentBadge = `[${active[0].index}:${shortenRole(active[0].role) || "sub"} ${dot}]`;
@@ -519,7 +684,7 @@ function withIcon(config: Config, icon: string, fallback: string): string {
 }
 
 function quotaInfo(cache: Cache | null | undefined, modelDisplay: string, officialQuota: Record<string, OfficialQuotaBucket> | undefined, now: Date): QuotaDisplay {
-  const cacheInfo = cacheQuotaInfo(cache, modelDisplay);
+  const cacheInfo = cacheQuotaInfo(cache, modelDisplay, now);
   const official = officialQuotaInfo(officialQuota, modelDisplay);
   if (official !== null) {
     if (official.hasQuota && cacheInfo !== null && cacheInfo.hasQuota && cacheIsFresh(cache, now)) {
@@ -533,14 +698,21 @@ function quotaInfo(cache: Cache | null | undefined, modelDisplay: string, offici
   return noQuota();
 }
 
-function cacheQuotaInfo(cache: Cache | null | undefined, modelDisplay: string): QuotaDisplay | null {
+export function cacheQuotaInfo(cache: Cache | null | undefined, modelDisplay: string, now: Date = new Date()): QuotaDisplay | null {
   const [quota, ok] = matchModel(cache, modelDisplay);
   if (!ok || quota === null) {
     return null;
   }
   const usagePct = quotaUsagePercent(quota);
   const reset = usagePct > 0 ? formatResetClock(quota.resetTime) : "";
-  return quotaDisplay([{ label: "", usagePct, reset }]);
+  let resetInSeconds: number | undefined;
+  if (quota.resetTime) {
+    const target = new Date(quota.resetTime.replace("Z", "+00:00"));
+    if (!Number.isNaN(target.getTime())) {
+      resetInSeconds = Math.max(0, Math.floor((target.getTime() - now.getTime()) / 1000));
+    }
+  }
+  return quotaDisplay([{ label: "5h", usagePct, reset, resetInSeconds }]);
 }
 
 function cacheIsFresh(cache: Cache | null | undefined, now: Date): boolean {
@@ -554,7 +726,7 @@ function cacheIsFresh(cache: Cache | null | undefined, now: Date): boolean {
   return now.getTime() - cacheTime.getTime() <= 5 * 60 * 1000;
 }
 
-function officialQuotaInfo(officialQuota: Record<string, OfficialQuotaBucket> | undefined, modelDisplay: string): QuotaDisplay | null {
+export function officialQuotaInfo(officialQuota: Record<string, OfficialQuotaBucket> | undefined, modelDisplay: string): QuotaDisplay | null {
   if (!officialQuota) {
     return null;
   }
@@ -573,7 +745,12 @@ function officialQuotaInfo(officialQuota: Record<string, OfficialQuotaBucket> | 
         resetTime: bucket.reset_time ?? ""
       });
       const reset = usagePct > 0 ? formatOfficialReset(bucket) : "";
-      buckets.push({ label, usagePct, reset });
+      buckets.push({
+        label,
+        usagePct,
+        reset,
+        resetInSeconds: bucket.reset_in_seconds
+      });
     }
   }
   if (buckets.length === 0) {
@@ -582,7 +759,7 @@ function officialQuotaInfo(officialQuota: Record<string, OfficialQuotaBucket> | 
   return quotaDisplay(buckets);
 }
 
-function mergeFreshCacheQuota(official: QuotaDisplay, cache: QuotaDisplay): QuotaDisplay {
+export function mergeFreshCacheQuota(official: QuotaDisplay, cache: QuotaDisplay): QuotaDisplay {
   if (!cache.hasQuota || cache.windows.length === 0) {
     return official;
   }
@@ -594,7 +771,12 @@ function mergeFreshCacheQuota(official: QuotaDisplay, cache: QuotaDisplay): Quot
     if (cacheWindow.usagePct <= window.usagePct) {
       return window;
     }
-    return { ...window, usagePct: cacheWindow.usagePct, reset: cacheWindow.reset };
+    return {
+      ...window,
+      usagePct: cacheWindow.usagePct,
+      reset: cacheWindow.reset,
+      resetInSeconds: cacheWindow.resetInSeconds
+    };
   });
   const hasFiveHourWindow = windows.some(window => window.label === "5h");
   if (!hasFiveHourWindow && cacheWindow.usagePct > official.usagePct) {

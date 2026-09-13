@@ -19,12 +19,13 @@ test("default config matches open-source defaults", () => {
   assert.equal(got.debug, false);
   assert.equal(got.contextValue, "percent");
   assert.equal(got.usageValue, "remaining");
+  assert.equal(got.line2Style, "unified");
 });
 
 test("load merges partial overrides", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-hud-"));
   const configPath = path.join(dir, "config.json");
-  fs.writeFileSync(configPath, `{"color":false,"multiline":false,"debug":true,"show_agent_state":false,"show_icons":false,"context_value":"both","usage_value":"percent"}`);
+  fs.writeFileSync(configPath, `{"color":false,"multiline":false,"debug":true,"show_agent_state":false,"show_icons":false,"context_value":"both","usage_value":"percent","line2_style":"classic"}`);
 
   const got = loadFromPaths([configPath]);
 
@@ -35,10 +36,18 @@ test("load merges partial overrides", () => {
   assert.equal(got.showIcons, false);
   assert.equal(got.contextValue, "both");
   assert.equal(got.usageValue, "percent");
+  assert.equal(got.line2Style, "classic");
   assert.equal(got.showModel, true);
   assert.equal(got.showProgressBar, true);
   assert.equal(got.showGitBranch, true);
   assert.equal(got.showCWD, true);
+});
+
+test("line2Style camelCase is also honored", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agy-hud-"));
+  const configPath = path.join(dir, "config.json");
+  fs.writeFileSync(configPath, JSON.stringify({ line2Style: "classic" }));
+  assert.equal(loadFromPaths([configPath]).line2Style, "classic");
 });
 
 test("load falls back on invalid JSON", () => {

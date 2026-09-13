@@ -181,6 +181,7 @@ function defaultConfig() {
     showCost: true,
     showIcons: true,
     showSubagents: true,
+    line2Style: "unified",
     contextValue: "percent",
     usageValue: "remaining",
     debug: false,
@@ -219,6 +220,8 @@ function merge(base, patch) {
   if (typeof patch.show_icons === "boolean") base.showIcons = patch.show_icons;
   if (typeof patch.show_subagents === "boolean") base.showSubagents = patch.show_subagents;
   if (typeof patch.showSubagents === "boolean") base.showSubagents = patch.showSubagents;
+  if (patch.line2_style === "unified" || patch.line2_style === "classic") base.line2Style = patch.line2_style;
+  if (patch.line2Style === "unified" || patch.line2Style === "classic") base.line2Style = patch.line2Style;
   if (typeof patch.context_value === "string" && patch.context_value !== "") base.contextValue = patch.context_value;
   if (typeof patch.usage_value === "string" && patch.usage_value !== "") base.usageValue = patch.usage_value;
   if (typeof patch.debug === "boolean") base.debug = patch.debug;
@@ -1004,7 +1007,7 @@ function renderSubagentLine(stats, width, colors) {
     activeTokens: 0,
     cumulativeTokens: 0
   };
-  const subagents = stats.filter((s) => s.index > 0);
+  const subagents = stats.filter((s) => s.index > 0).sort((a, b) => b.index - a.index);
   const rootBadge = formatRootBadge(root, colors);
   if (subagents.length === 0) {
     return fit(rootBadge, width);
@@ -1046,37 +1049,156 @@ function renderSubagentLine(stats, width, colors) {
   }
   return fit(tier4, width);
 }
+function formatResetTenth(seconds) {
+  if (typeof seconds !== "number" || !Number.isFinite(seconds) || seconds <= 0) {
+    return "";
+  }
+  if (seconds < 3600) {
+    const mins = Math.max(1, Math.round(seconds / 60));
+    if (mins >= 60) return "1.0h";
+    return `${mins}m`;
+  }
+  if (seconds < 86400) {
+    const hours = (seconds / 3600).toFixed(1);
+    if (hours === "24.0") return "1.0d";
+    return `${hours}h`;
+  }
+  return `${(seconds / 86400).toFixed(1)}d`;
+}
+function formatQuotaSegments(quota, config, includeReset) {
+  if (!quota.hasQuota || quota.windows.length === 0) {
+    const part1 = `${colorize("5h", colorCyan, config.color)} ${colorize("--", colorMuted, config.color)}`;
+    const part2 = `${colorize("W", colorCyan, config.color)} ${colorize("--", colorMuted, config.color)}`;
+    return [part1, part2];
+  }
+  return quota.windows.map((window) => {
+    const label = colorize(window.label || "5h", colorCyan, config.color);
+    const val = config.usageValue === "remaining" ? 100 - window.usagePct : window.usagePct;
+    const value = colorize(`${val.toFixed(1)}%`, percentageColor(window.usagePct), config.color);
+    let resetStr = "";
+    if (includeReset && window.resetInSeconds) {
+      const duration = formatResetTenth(window.resetInSeconds);
+      if (duration !== "") {
+        resetStr = colorize(`(${duration})`, colorMuted, config.color);
+      }
+    }
+    return resetStr !== "" ? `${label} ${value} ${resetStr}` : `${label} ${value}`;
+  });
+}
+function renderUnifiedLine2(payload, config, width, _quota, subagents) {
+  const rootAgent = subagents?.agents.find((s) => s.index === 0) ?? {
+    index: 0,
+    id: payload.conversation_id || "",
+    role: "root",
+    status: payload.agent_state || "idle",
+    isRunning: false,
+    activeTokens: payload.context_window?.total_input_tokens ?? 0,
+    cumulativeTokens: (payload.context_window?.total_input_tokens ?? 0) + (payload.context_window?.total_output_tokens ?? 0)
+  };
+  const colors = config.color;
+  const rootBadge = formatRootBadge(rootAgent, colors);
+  const subagentsList = config.showSubagents !== false && subagents?.agents ? subagents.agents.filter((s) => s.index > 0).sort((a, b) => b.index - a.index) : [];
+  const activeSubagents = subagentsList.filter((s) => s.isRunning);
+  const hasActive = (subagents?.hasActiveSubagents ?? activeSubagents.length > 0) && activeSubagents.length > 0;
+  if (!hasActive || subagentsList.length === 0) {
+    if (visibleLen(rootBadge) <= width) {
+      return rootBadge;
+    }
+    return fit(rootBadge, width);
+  }
+  const tier1Parts = [rootBadge, ...subagentsList.map((s) => formatSubagentBadge(s, true, colors))];
+  const tier1 = tier1Parts.join(" ");
+  if (visibleLen(tier1) <= width) {
+    return tier1;
+  }
+  const tier2Parts = [rootBadge, ...subagentsList.map((s) => formatSubagentBadge(s, false, colors))];
+  const tier2 = tier2Parts.join(" ");
+  if (visibleLen(tier2) <= width) {
+    return tier2;
+  }
+  const idleCount = subagentsList.length - activeSubagents.length;
+  const idleBadge = idleCount > 0 ? colorize(`[+${idleCount} idle]`, colorMuted, colors) : "";
+  const tier3Parts = [rootBadge, ...activeSubagents.map((s) => formatSubagentBadge(s, true, colors))];
+  if (idleBadge) tier3Parts.push(idleBadge);
+  const tier3 = tier3Parts.join(" ");
+  if (visibleLen(tier3) <= width) {
+    return tier3;
+  }
+  const tier3CompactParts = [rootBadge, ...activeSubagents.map((s) => formatSubagentBadge(s, false, colors))];
+  if (idleBadge) tier3CompactParts.push(idleBadge);
+  const tier3Compact = tier3CompactParts.join(" ");
+  if (visibleLen(tier3Compact) <= width) {
+    return tier3Compact;
+  }
+  const activeBadge = colorize(`[${activeSubagents.length} active]`, colorGreen, colors);
+  const tier4Parts = [rootBadge, activeBadge];
+  const tier4 = tier4Parts.join(" ");
+  if (visibleLen(tier4) <= width) {
+    return tier4;
+  }
+  if (visibleLen(rootBadge) <= width) {
+    return rootBadge;
+  }
+  return fit(rootBadge, width);
+}
 function renderMultiline(payload, config, width, modelSegment, ctxPct, quota, branch2, stateLabel, subagents) {
-  const line1Parts = [modelSegment];
-  if (config.showCWD && payload.cwd) {
-    line1Parts.push(colorize(withIcon(config, " ", "") + import_node_path3.default.basename(payload.cwd), colorYellow, config.color));
-  }
-  if (config.showGitBranch && branch2 !== "") {
-    line1Parts.push(colorize(renderGitSegment(branch2, config), colorGit, config.color));
-  }
+  const cwdText = config.showCWD && payload.cwd ? colorize(withIcon(config, " ", "") + import_node_path3.default.basename(payload.cwd), colorYellow, config.color) : "";
+  const gitText = config.showGitBranch && branch2 !== "" ? colorize(renderGitSegment(branch2, config), colorGit, config.color) : "";
   const stateText = config.showAgentState ? colorize(stateLabel, stateColor(stateLabel), config.color) : "";
-  line1Parts.push(stateText);
   const costText = renderCost(payload.cost, config);
-  let line1 = joinHeader(...line1Parts, costText);
-  if (visibleLen(line1) > width) {
-    line1 = joinHeader(...line1Parts);
-  }
-  if (visibleLen(line1) > width) {
-    const git = config.showGitBranch && branch2 !== "" ? colorize(renderGitSegment(branch2, config), colorGit, config.color) : "";
-    line1 = joinHeader(modelSegment, git, stateText);
-  }
-  if (visibleLen(line1) > width) {
-    line1 = joinHeader(modelSegment, stateText);
-  }
-  if (visibleLen(line1) > width) {
-    line1 = modelSegment;
-  }
-  line1 = fit(line1, width);
-  let line2;
-  if (config.showSubagents !== false && subagents && subagents.hasActiveSubagents) {
-    line2 = renderSubagentLine(subagents.agents, width, config.color);
+  let line1;
+  if (config.line2Style === "unified") {
+    const quotaWithReset = formatQuotaSegments(quota, config, true);
+    const quotaNoReset = formatQuotaSegments(quota, config, false);
+    line1 = joinHeader(...quotaWithReset, modelSegment, cwdText, gitText, stateText, costText);
+    if (visibleLen(line1) > width) {
+      line1 = joinHeader(...quotaNoReset, modelSegment, cwdText, gitText, stateText, costText);
+    }
+    if (visibleLen(line1) > width) {
+      line1 = joinHeader(...quotaNoReset, modelSegment, cwdText, gitText, stateText);
+    }
+    if (visibleLen(line1) > width) {
+      line1 = joinHeader(...quotaNoReset, modelSegment, gitText, stateText);
+    }
+    if (visibleLen(line1) > width) {
+      line1 = joinHeader(...quotaNoReset, modelSegment, stateText);
+    }
+    if (visibleLen(line1) > width) {
+      line1 = joinHeader(modelSegment, stateText);
+    }
+    if (visibleLen(line1) > width) {
+      line1 = modelSegment;
+    }
+    line1 = fit(line1, width);
   } else {
-    line2 = renderResourceLine(payload, config, width, ctxPct, quota);
+    const line1Parts = [modelSegment];
+    if (cwdText) line1Parts.push(cwdText);
+    if (gitText) line1Parts.push(gitText);
+    if (stateText) line1Parts.push(stateText);
+    line1 = joinHeader(...line1Parts, costText);
+    if (visibleLen(line1) > width) {
+      line1 = joinHeader(...line1Parts);
+    }
+    if (visibleLen(line1) > width) {
+      line1 = joinHeader(modelSegment, gitText, stateText);
+    }
+    if (visibleLen(line1) > width) {
+      line1 = joinHeader(modelSegment, stateText);
+    }
+    if (visibleLen(line1) > width) {
+      line1 = modelSegment;
+    }
+    line1 = fit(line1, width);
+  }
+  let line2;
+  if (config.line2Style === "classic") {
+    if (config.showSubagents !== false && subagents && subagents.hasActiveSubagents) {
+      line2 = renderSubagentLine(subagents.agents, width, config.color);
+    } else {
+      line2 = renderResourceLine(payload, config, width, ctxPct, quota);
+    }
+  } else {
+    line2 = renderUnifiedLine2(payload, config, width, quota, subagents);
   }
   return `${line1}
 ${line2}`;
@@ -1130,7 +1252,7 @@ function renderResourceLine(payload, config, width, ctxPct, quota) {
 function renderSingleLine(payload, config, width, modelSegment, ctxPct, quota, stateLabel, subagents) {
   let subagentBadge = "";
   if (config.showSubagents !== false && subagents?.hasActiveSubagents) {
-    const active = subagents.agents.filter((a) => a.index > 0 && a.isRunning);
+    const active = subagents.agents.filter((a) => a.index > 0 && a.isRunning).sort((a, b) => b.index - a.index);
     if (active.length === 1) {
       const dot = colorize("\u25CF", colorGreen, config.color);
       subagentBadge = `[${active[0].index}:${shortenRole(active[0].role) || "sub"} ${dot}]`;
@@ -1222,7 +1344,7 @@ function withIcon(config, icon, fallback) {
   return config.showIcons ? icon : fallback;
 }
 function quotaInfo(cache, modelDisplay, officialQuota, now) {
-  const cacheInfo = cacheQuotaInfo(cache, modelDisplay);
+  const cacheInfo = cacheQuotaInfo(cache, modelDisplay, now);
   const official = officialQuotaInfo(officialQuota, modelDisplay);
   if (official !== null) {
     if (official.hasQuota && cacheInfo !== null && cacheInfo.hasQuota && cacheIsFresh(cache, now)) {
@@ -1235,14 +1357,21 @@ function quotaInfo(cache, modelDisplay, officialQuota, now) {
   }
   return noQuota();
 }
-function cacheQuotaInfo(cache, modelDisplay) {
+function cacheQuotaInfo(cache, modelDisplay, now = /* @__PURE__ */ new Date()) {
   const [quota, ok] = matchModel(cache, modelDisplay);
   if (!ok || quota === null) {
     return null;
   }
   const usagePct = usagePercent(quota);
   const reset = usagePct > 0 ? formatResetClock(quota.resetTime) : "";
-  return quotaDisplay([{ label: "", usagePct, reset }]);
+  let resetInSeconds;
+  if (quota.resetTime) {
+    const target = new Date(quota.resetTime.replace("Z", "+00:00"));
+    if (!Number.isNaN(target.getTime())) {
+      resetInSeconds = Math.max(0, Math.floor((target.getTime() - now.getTime()) / 1e3));
+    }
+  }
+  return quotaDisplay([{ label: "5h", usagePct, reset, resetInSeconds }]);
 }
 function cacheIsFresh(cache, now) {
   if (!cache?.timestamp) {
@@ -1273,7 +1402,12 @@ function officialQuotaInfo(officialQuota, modelDisplay) {
         resetTime: bucket.reset_time ?? ""
       });
       const reset = usagePct > 0 ? formatOfficialReset(bucket) : "";
-      buckets.push({ label, usagePct, reset });
+      buckets.push({
+        label,
+        usagePct,
+        reset,
+        resetInSeconds: bucket.reset_in_seconds
+      });
     }
   }
   if (buckets.length === 0) {
@@ -1293,7 +1427,12 @@ function mergeFreshCacheQuota(official, cache) {
     if (cacheWindow.usagePct <= window.usagePct) {
       return window;
     }
-    return { ...window, usagePct: cacheWindow.usagePct, reset: cacheWindow.reset };
+    return {
+      ...window,
+      usagePct: cacheWindow.usagePct,
+      reset: cacheWindow.reset,
+      resetInSeconds: cacheWindow.resetInSeconds
+    };
   });
   const hasFiveHourWindow = windows.some((window) => window.label === "5h");
   if (!hasFiveHourWindow && cacheWindow.usagePct > official.usagePct) {

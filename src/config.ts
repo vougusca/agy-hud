@@ -11,6 +11,7 @@ export interface Config {
   showCost: boolean;
   showIcons: boolean;
   showSubagents: boolean;
+  line2Style: "unified" | "classic";
   contextValue: string;
   usageValue: string;
   debug: boolean;
@@ -30,6 +31,7 @@ export function defaultConfig(): Config {
     showCost: true,
     showIcons: true,
     showSubagents: true,
+    line2Style: "unified",
     contextValue: "percent",
     usageValue: "remaining",
     debug: false,
@@ -71,6 +73,8 @@ function merge(base: Config, patch: Record<string, unknown>): Config {
   if (typeof patch.show_icons === "boolean") base.showIcons = patch.show_icons;
   if (typeof patch.show_subagents === "boolean") base.showSubagents = patch.show_subagents;
   if (typeof patch.showSubagents === "boolean") base.showSubagents = patch.showSubagents;
+  if (patch.line2_style === "unified" || patch.line2_style === "classic") base.line2Style = patch.line2_style;
+  if (patch.line2Style === "unified" || patch.line2Style === "classic") base.line2Style = patch.line2Style;
   if (typeof patch.context_value === "string" && patch.context_value !== "") base.contextValue = patch.context_value;
   if (typeof patch.usage_value === "string" && patch.usage_value !== "") base.usageValue = patch.usage_value;
   if (typeof patch.debug === "boolean") base.debug = patch.debug;

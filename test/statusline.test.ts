@@ -3,9 +3,23 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { strip, visibleLen } from "../src/ansi";
-import { defaultConfig, Config } from "../src/config";
+import { defaultConfig, Config, parseConfig } from "../src/config";
 import { Cache } from "../src/quota";
-import { Payload, render, shortModelName, formatCost, formatTokens, renderSubagentLine, shortenRole } from "../src/statusline";
+import {
+  Payload,
+  render,
+  shortModelName,
+  formatCost,
+  formatTokens,
+  renderSubagentLine,
+  shortenRole,
+  formatResetTenth,
+  formatQuotaSegments,
+  formatQuotaChip,
+  renderUnifiedLine2,
+  QuotaDisplay,
+  QuotaWindowDisplay
+} from "../src/statusline";
 import { AgentTokenStats, SubagentTrackerResult } from "../src/subagentTracker";
 
 function fixturePayload(): Payload {
@@ -73,7 +87,8 @@ test("multiline default shape uses context and quota", () => {
       }
     }
   };
-  const out = strip(renderFixture(defaultConfig(), cache));
+  const config: Config = { ...defaultConfig(), line2Style: "classic" };
+  const out = strip(renderFixture(config, cache));
   const lines = out.split("\n");
   assert.equal(lines.length, 2);
   assert.match(lines[0], /󱐋 3\.5 Flash Med \|  Pro/);
@@ -103,6 +118,7 @@ test("remaining quota renders as a context-style bar from precise fraction", () 
   };
   const config = defaultConfig();
   config.color = false;
+  config.line2Style = "classic";
 
   const out = strip(renderFixture(config, cache));
 
@@ -134,8 +150,7 @@ test("official quota payload renders five-hour and weekly windows over stale quo
       }
     }
   };
-  const config = defaultConfig();
-  config.color = false;
+  const config = { ...defaultConfig(), line2Style: "classic" as const, color: false };
 
   const out = strip(render(payload, {
     config,
@@ -166,9 +181,7 @@ test("untouched official third-party quota does not override consumed active-mod
       }
     }
   };
-  const config = defaultConfig();
-  config.color = false;
-  config.contextValue = "both";
+  const config = { ...defaultConfig(), line2Style: "classic" as const, color: false, contextValue: "both" };
 
   const out = strip(render(payload, {
     config,
@@ -199,8 +212,7 @@ test("fresh active-model cache can override stale official third-party quota wit
       }
     }
   };
-  const config = defaultConfig();
-  config.color = false;
+  const config = { ...defaultConfig(), line2Style: "classic" as const, color: false };
 
   const out = strip(render(payload, {
     config,
@@ -226,8 +238,7 @@ test("official quota uses third-party buckets for Claude and GPT models", () => 
       reset_time: "2026-06-15T08:21:23Z"
     }
   };
-  const config = defaultConfig();
-  config.color = false;
+  const config = { ...defaultConfig(), line2Style: "classic" as const, color: false };
 
   const out = strip(render(payload, {
     config,
@@ -255,7 +266,7 @@ test("current Gemini, Claude and GPT labels select the matching dual quota windo
       "gemini-5h": { remaining_fraction: 0.42 }, "gemini-weekly": { remaining_fraction: 0.81 },
       "3p-5h": { remaining_fraction: 0.13 }, "3p-weekly": { remaining_fraction: 0.67 }
     } };
-    const usage = render(payload, { config: { ...defaultConfig(), color: false } }).split("\n")[1];
+    const usage = render(payload, { config: { ...defaultConfig(), line2Style: "classic", color: false } }).split("\n")[1];
     assert.match(usage, new RegExp(wantFiveHour));
     assert.match(usage, new RegExp(wantWeekly));
   }
@@ -268,9 +279,7 @@ test("context value formats", () => {
     both: "Ctx █░░░░░░░░░ 11.92% (125k/1M)"
   };
   for (const [value, want] of Object.entries(cases)) {
-    const config = defaultConfig();
-    config.color = false;
-    config.contextValue = value;
+    const config = { ...defaultConfig(), line2Style: "classic" as const, color: false, contextValue: value };
     assert.match(renderFixture(config), new RegExp(want.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
 });
@@ -283,9 +292,7 @@ test("context percent ignores volatile output token count", () => {
     context_window_size: 1_000_000,
     used_percentage: 10
   };
-  const config = defaultConfig();
-  config.color = false;
-  config.contextValue = "both";
+  const config = { ...defaultConfig(), line2Style: "classic" as const, color: false, contextValue: "both" };
 
   const out = strip(render(payload, {
     config,
@@ -308,9 +315,7 @@ test("usage value can show percent used", () => {
       }
     }
   };
-  const config = defaultConfig();
-  config.color = false;
-  config.usageValue = "percent";
+  const config = { ...defaultConfig(), line2Style: "classic" as const, color: false, usageValue: "percent" };
   assert.match(renderFixture(config, cache), /██████░░ 80.00% ↻ Reset \d\d:\d\d/);
   assert.doesNotMatch(renderFixture(config, cache), /↻ 00:44/);
 });
@@ -332,7 +337,7 @@ test("remaining usage bar color reflects used percentage", () => {
       }
     }
   };
-  const out = renderFixture(defaultConfig(), cache);
+  const out = renderFixture({ ...defaultConfig(), line2Style: "classic" }, cache);
   assert.match(out, /\x1b\[33m███░░░░░\x1b\[0m/);
   assert.match(out, /\x1b\[33m40\.00%\x1b\[0m left/);
   assert.match(strip(out), /40.00% left/);
@@ -344,7 +349,7 @@ test("context percentage text color reflects usage", () => {
     total_input_tokens: 95,
     context_window_size: 100
   };
-  const out = renderFixture(defaultConfig(), null, payload);
+  const out = renderFixture({ ...defaultConfig(), line2Style: "classic" }, null, payload);
   assert.match(out, /\x1b\[31m95\.00%\x1b\[0m/);
 });
 
@@ -364,7 +369,7 @@ test("full remaining quota hides inactive reset countdown", () => {
       }
     }
   };
-  const out = strip(renderFixture(defaultConfig(), cache));
+  const out = strip(renderFixture({ ...defaultConfig(), line2Style: "classic" }, cache));
   assert.match(out, /% left/);
   assert.match(out, /100.00% left/);
   assert.doesNotMatch(out, /↻/);
@@ -388,7 +393,7 @@ test("payload model wins over stale cache active model", () => {
   };
 
   const out = strip(render(payload, {
-    config: defaultConfig(),
+    config: { ...defaultConfig(), line2Style: "classic" },
     quota: { ...cache, active_model: "Gemini 3.5 Flash (High)" } as Cache,
     gitBranch: "main",
     now: new Date("2026-05-19T12:00:00Z")
@@ -525,7 +530,7 @@ test("multiline drops cost before directory or branch at boundary widths", () =>
     model: { display_name: "Claude Sonnet 4.6" }, cwd: "/workspace/project",
     plan_tier: "Google AI Pro", agent_state: "idle", cost: { total_usd: 0 }
   };
-  const config = { ...defaultConfig(), color: false, showIcons: false };
+  const config = { ...defaultConfig(), line2Style: "classic" as const, color: false, showIcons: false };
   const cases = [
     [40, "Sonnet 4.6 | Pro │ project │ main │ Idle"],
     [32, "Sonnet 4.6 | Pro │ main │ Idle"]
@@ -575,7 +580,7 @@ test("plan badges normalize known tiers and do not call unknown paid plans Free"
   ];
   for (const [plan_tier, want] of cases) {
     const out = render({ model: { display_name: "Claude Sonnet 4.6" }, plan_tier, terminal_width: 100 }, {
-      config: { ...defaultConfig(), color: false, showIcons: false }
+      config: { ...defaultConfig(), line2Style: "classic" as const, color: false, showIcons: false }
     });
     assert.equal(out.split("\n")[0], `Sonnet 4.6 | ${want} │ Idle`);
   }
@@ -666,11 +671,11 @@ test("renderSubagentLine renders root badge and subagent badges with correct gly
 
   // Colors disabled for clear string comparison
   const lineNoColor = renderSubagentLine(stats, 120, false);
-  assert.equal(lineNoColor, "[◆ 2.2k/45k] [1:dev 15k/40k ●] [2:rev 8k/22k ○]");
+  assert.equal(lineNoColor, "[◆ 2.2k/45k] [2:rev 8k/22k ○] [1:dev 15k/40k ●]");
 
   // Colors enabled: check ANSI preservation and visible length parity
   const lineColored = renderSubagentLine(stats, 120, true);
-  assert.equal(strip(lineColored), "[◆ 2.2k/45k] [1:dev 15k/40k ●] [2:rev 8k/22k ○]");
+  assert.equal(strip(lineColored), "[◆ 2.2k/45k] [2:rev 8k/22k ○] [1:dev 15k/40k ●]");
   assert.equal(visibleLen(lineColored), visibleLen(lineNoColor));
   assert.match(lineColored, /\x1b\[36m\[◆ 2.2k\/45k\]\x1b\[0m/); // Cyan root badge
   assert.match(lineColored, /●/); // Running green dot
@@ -686,12 +691,12 @@ test("renderSubagentLine responsive degradation tiers under narrow widths", () =
 
   // Tier 1 (Full): visible length is 49 chars -> fits in width 50
   const tier1 = renderSubagentLine(stats, 50, false);
-  assert.equal(tier1, "[◆ 2.2k/45k] [1:dev 15k/40k ●] [2:rev 8k/22k ○]");
+  assert.equal(tier1, "[◆ 2.2k/45k] [2:rev 8k/22k ○] [1:dev 15k/40k ●]");
 
   // Tier 2 (Compact Roles): when width is 45, Tier 1 doesn't fit, Tier 2 does:
-  // "[◆ 2.2k/45k] [1:15k/40k ●] [2:8k/22k ○]" (41 chars)
+  // "[◆ 2.2k/45k] [2:8k/22k ○] [1:15k/40k ●]" (41 chars)
   const tier2 = renderSubagentLine(stats, 45, false);
-  assert.equal(tier2, "[◆ 2.2k/45k] [1:15k/40k ●] [2:8k/22k ○]");
+  assert.equal(tier2, "[◆ 2.2k/45k] [2:8k/22k ○] [1:15k/40k ●]");
 
   // Tier 3 (Active Priority): width 38 -> Tier 2 (41) doesn't fit
   const tier3 = renderSubagentLine(stats, 38, false);
@@ -708,6 +713,51 @@ test("renderSubagentLine responsive degradation tiers under narrow widths", () =
     const rendered = renderSubagentLine(stats, w, true);
     assert.ok(visibleLen(rendered) <= w, `Overflow at width ${w}: "${strip(rendered)}"`);
   }
+});
+
+test("subagents are rendered in reverse index order (most recent first)", () => {
+  const stats: AgentTokenStats[] = [
+    { index: 0, id: "root", role: "root", status: "idle", isRunning: false, activeTokens: 2200, cumulativeTokens: 45000 },
+    { index: 1, id: "sub1", role: "dev", status: "running", isRunning: true, activeTokens: 15000, cumulativeTokens: 40000 },
+    { index: 2, id: "sub2", role: "reviewer", status: "running", isRunning: true, activeTokens: 8000, cumulativeTokens: 22000 },
+    { index: 3, id: "sub3", role: "writer", status: "running", isRunning: true, activeTokens: 4000, cumulativeTokens: 10000 }
+  ];
+
+  // renderSubagentLine renders [3:...] [2:...] [1:...]
+  const classic = renderSubagentLine(stats, 150, false);
+  assert.equal(
+    classic,
+    "[◆ 2.2k/45k] [3:doc 4k/10k ●] [2:rev 8k/22k ●] [1:dev 15k/40k ●]"
+  );
+
+  // renderUnifiedLine2 renders [3:...] [2:...] [1:...]
+  const payload = fixturePayload();
+  const config = { ...defaultConfig(), showSubagents: true, color: false };
+  const subagents: SubagentTrackerResult = {
+    hasActiveSubagents: true,
+    agents: stats
+  };
+  const unified = renderUnifiedLine2(payload, config, 150, undefined, subagents);
+  assert.equal(
+    unified,
+    "[◆ 2.2k/45k] [3:doc 4k/10k ●] [2:rev 8k/22k ●] [1:dev 15k/40k ●]"
+  );
+
+  // renderSingleLine selects the most recent active subagent when active.length === 1
+  const statsSingle: AgentTokenStats[] = [
+    { index: 0, id: "root", role: "root", status: "idle", isRunning: false, activeTokens: 2200, cumulativeTokens: 45000 },
+    { index: 1, id: "sub1", role: "dev", status: "idle", isRunning: false, activeTokens: 15000, cumulativeTokens: 40000 },
+    { index: 2, id: "sub2", role: "reviewer", status: "running", isRunning: true, activeTokens: 8000, cumulativeTokens: 22000 }
+  ];
+  const outSingle = render(payload, {
+    config: { ...defaultConfig(), multiline: false, color: false },
+    gitBranch: "main",
+    subagents: {
+      hasActiveSubagents: true,
+      agents: statsSingle
+    }
+  });
+  assert.match(outSingle, /\[2:rev ●\]/);
 });
 
 test("dynamic multiline lifecycle transitions between subagent badges and quota line", () => {
@@ -730,7 +780,7 @@ test("dynamic multiline lifecycle transitions between subagent badges and quota 
 
   // Phase 1: Subagent running -> Line 2 dynamically displays subagent badges
   const outRunning = render(payload, {
-    config: { ...defaultConfig(), multiline: true, color: false },
+    config: { ...defaultConfig(), multiline: true, line2Style: "classic", color: false },
     gitBranch: "main",
     subagents: subagentRunning
   });
@@ -742,7 +792,7 @@ test("dynamic multiline lifecycle transitions between subagent badges and quota 
 
   // Phase 2: All subagents completed -> Line 2 automatically transitions back to Ctx / Quota line
   const outCompleted = render(payload, {
-    config: { ...defaultConfig(), multiline: true, color: false },
+    config: { ...defaultConfig(), multiline: true, line2Style: "classic", color: false },
     gitBranch: "main",
     subagents: subagentsCompleted
   });
@@ -753,7 +803,7 @@ test("dynamic multiline lifecycle transitions between subagent badges and quota 
 
   // Phase 3: showSubagents disabled in config -> Always renders Ctx line even if subagent is running
   const outDisabled = render(payload, {
-    config: { ...defaultConfig(), multiline: true, color: false, showSubagents: false },
+    config: { ...defaultConfig(), multiline: true, line2Style: "classic", color: false, showSubagents: false },
     gitBranch: "main",
     subagents: subagentRunning
   });
@@ -782,4 +832,394 @@ test("single-line mode integrates compact subagent badge when active", () => {
   assert.match(outSingle, /\[1:dev ●\]/);
   assert.ok(visibleLen(outSingle) <= 100);
 });
+
+test("formatResetTenth boundary conditions and rollover guards", () => {
+  // <= 0 or invalid inputs return empty string
+  assert.equal(formatResetTenth(undefined), "");
+  assert.equal(formatResetTenth(null as any), "");
+  assert.equal(formatResetTenth(NaN), "");
+  assert.equal(formatResetTenth(-10), "");
+  assert.equal(formatResetTenth(0), "");
+
+  // < 3600 seconds: minute rounding and rollover
+  assert.equal(formatResetTenth(10), "1m");
+  assert.equal(formatResetTenth(30), "1m");
+  assert.equal(formatResetTenth(59), "1m");
+  assert.equal(formatResetTenth(60), "1m");
+  assert.equal(formatResetTenth(89), "1m");
+  assert.equal(formatResetTenth(90), "2m");
+  assert.equal(formatResetTenth(3569), "59m");
+  // Rollover guard: 3570s -> round(3570/60) = 60 -> "1.0h"
+  assert.equal(formatResetTenth(3570), "1.0h");
+  assert.equal(formatResetTenth(3599), "1.0h");
+
+  // < 86400 seconds: tenth-of-hour and rollover
+  assert.equal(formatResetTenth(3600), "1.0h");
+  assert.equal(formatResetTenth(5400), "1.5h");
+  assert.equal(formatResetTenth(7200), "2.0h");
+  assert.equal(formatResetTenth(86364), "24.0h".replace("24.0h", "1.0d")); // hours === "24.0" guard -> "1.0d"
+  assert.equal(formatResetTenth(86390), "1.0d");
+
+  // >= 86400 seconds: tenth-of-day
+  assert.equal(formatResetTenth(86400), "1.0d");
+  assert.equal(formatResetTenth(129600), "1.5d");
+  assert.equal(formatResetTenth(172800), "2.0d");
+  assert.equal(formatResetTenth(259200), "3.0d");
+});
+
+test("formatQuotaSegments placeholder, windows, reset duration, and colors", () => {
+  const config = { ...defaultConfig(), color: false };
+
+  // Empty / no-quota placeholder
+  const emptyQuota: QuotaDisplay = { hasQuota: false, usagePct: 0, reset: "", windows: [] };
+  assert.deepEqual(formatQuotaSegments(emptyQuota, config, false), ["5h --", "W --"]);
+  assert.deepEqual(formatQuotaSegments(emptyQuota, config, true), ["5h --", "W --"]);
+
+  // Placeholder with color
+  const coloredConfig = { ...defaultConfig(), color: true };
+  const coloredPlaceholder = formatQuotaSegments(emptyQuota, coloredConfig, false);
+  assert.match(coloredPlaceholder[0], /\x1b\[36m5h\x1b\[0m/);
+  assert.match(coloredPlaceholder[0], /\x1b\[90m--\x1b\[0m/);
+  assert.match(coloredPlaceholder[1], /\x1b\[36mW\x1b\[0m/);
+  assert.match(coloredPlaceholder[1], /\x1b\[90m--\x1b\[0m/);
+
+  // Windows formatting with remaining vs percent usageValue
+  const quota: QuotaDisplay = {
+    hasQuota: true,
+    usagePct: 20,
+    reset: "12:00",
+    windows: [
+      { label: "5h", usagePct: 20, reset: "12:00", resetInSeconds: 5400 },
+      { label: "W", usagePct: 5, reset: "12:00", resetInSeconds: 172800 }
+    ]
+  };
+
+  // Remaining usage (default)
+  assert.deepEqual(formatQuotaSegments(quota, config, false), ["5h 80.0%", "W 95.0%"]);
+  assert.deepEqual(formatQuotaSegments(quota, config, true), ["5h 80.0% (1.5h)", "W 95.0% (2.0d)"]);
+
+  // Percent used
+  const percentConfig = { ...config, usageValue: "percent" };
+  assert.deepEqual(formatQuotaSegments(quota, percentConfig, false), ["5h 20.0%", "W 5.0%"]);
+  assert.deepEqual(formatQuotaSegments(quota, percentConfig, true), ["5h 20.0% (1.5h)", "W 5.0% (2.0d)"]);
+
+  // Colorization of values and reset string
+  const coloredSegs = formatQuotaSegments(quota, coloredConfig, true);
+  assert.match(coloredSegs[0], /\x1b\[32m80\.0%\x1b\[0m/); // usagePct < 50% => green
+  assert.match(coloredSegs[0], /\x1b\[90m\(1\.5h\)\x1b\[0m/); // reset duration in colorMuted
+  assert.match(coloredSegs[1], /\x1b\[90m\(2\.0d\)\x1b\[0m/);
+
+  // Single window without label defaults to "5h"
+  const singleWindowQuota: QuotaDisplay = {
+    hasQuota: true,
+    usagePct: 92,
+    reset: "",
+    windows: [{ label: "", usagePct: 92, reset: "" }]
+  };
+  assert.deepEqual(formatQuotaSegments(singleWindowQuota, config, false), ["5h 8.0%"]);
+  const coloredWarning = formatQuotaSegments(singleWindowQuota, coloredConfig, false);
+  assert.match(coloredWarning[0], /\x1b\[31m8\.0%\x1b\[0m/); // usagePct >= 90% => red
+});
+
+test("formatQuotaChip placeholder, windows, reset duration, and colors", () => {
+  const config = { ...defaultConfig(), color: false };
+
+  // Empty / no-quota placeholder
+  const emptyQuota: QuotaDisplay = { hasQuota: false, usagePct: 0, reset: "", windows: [] };
+  assert.equal(formatQuotaChip(emptyQuota, config, false), "[5h -- | W --]");
+  assert.equal(formatQuotaChip(emptyQuota, config, true), "[5h -- | W --]");
+
+  // Placeholder with color
+  const coloredConfig = { ...defaultConfig(), color: true };
+  const coloredPlaceholder = formatQuotaChip(emptyQuota, coloredConfig, false);
+  assert.match(coloredPlaceholder, /\x1b\[36m5h\x1b\[0m/);
+  assert.match(coloredPlaceholder, /\x1b\[36mW\x1b\[0m/);
+  assert.match(coloredPlaceholder, /\x1b\[90m--\x1b\[0m/);
+  assert.match(coloredPlaceholder, /\x1b\[90m\|\x1b\[0m/);
+
+  // Windows formatting with remaining vs percent usageValue
+  const quota: QuotaDisplay = {
+    hasQuota: true,
+    usagePct: 20,
+    reset: "12:00",
+    windows: [
+      { label: "5h", usagePct: 20, reset: "12:00", resetInSeconds: 5400 },
+      { label: "W", usagePct: 5, reset: "12:00", resetInSeconds: 172800 }
+    ]
+  };
+
+  // Remaining usage (default)
+  assert.equal(formatQuotaChip(quota, config, false), "[5h 80.0% | W 95.0%]");
+  assert.equal(formatQuotaChip(quota, config, true), "[5h 80.0% (1.5h) | W 95.0% (2.0d)]");
+
+  // Percent used
+  const percentConfig = { ...config, usageValue: "percent" };
+  assert.equal(formatQuotaChip(quota, percentConfig, false), "[5h 20.0% | W 5.0%]");
+  assert.equal(formatQuotaChip(quota, percentConfig, true), "[5h 20.0% (1.5h) | W 5.0% (2.0d)]");
+
+  // Colorization of values and reset string
+  const coloredChip = formatQuotaChip(quota, coloredConfig, true);
+  assert.match(coloredChip, /\x1b\[32m80\.0%\x1b\[0m/); // usagePct < 50% => green
+  assert.match(coloredChip, /\x1b\[90m\(1\.5h\)\x1b\[0m/); // reset duration in colorMuted
+  assert.match(coloredChip, /\x1b\[90m\(2\.0d\)\x1b\[0m/);
+
+  // Single window without label defaults to "5h"
+  const singleWindowQuota: QuotaDisplay = {
+    hasQuota: true,
+    usagePct: 92,
+    reset: "",
+    windows: [{ label: "", usagePct: 92, reset: "" }]
+  };
+  assert.equal(formatQuotaChip(singleWindowQuota, config, false), "[5h 8.0%]");
+  const coloredWarning = formatQuotaChip(singleWindowQuota, coloredConfig, false);
+  assert.match(coloredWarning, /\x1b\[31m8\.0%\x1b\[0m/); // usagePct >= 90% => red
+});
+
+test("renderUnifiedLine2 root agent fallback when subagents is absent", () => {
+  const payload: Payload = {
+    conversation_id: "conv-fallback",
+    agent_state: "thinking",
+    context_window: {
+      total_input_tokens: 3400,
+      total_output_tokens: 1600
+    }
+  };
+  const config = { ...defaultConfig(), color: false };
+  const emptyQuota: QuotaDisplay = { hasQuota: false, usagePct: 0, reset: "", windows: [] };
+
+  const line2 = renderUnifiedLine2(payload, config, 100, emptyQuota, null);
+  // Root badge alone without quota chip: [◆ 3.4k/5k]
+  assert.equal(line2, "[◆ 3.4k/5k]");
+});
+
+test("renderUnifiedLine2 responsive degradation tiers", () => {
+  const payload: Payload = {
+    conversation_id: "conv-123",
+    agent_state: "idle"
+  };
+  const config = { ...defaultConfig(), color: false };
+
+  const quota: QuotaDisplay = {
+    hasQuota: true,
+    usagePct: 20,
+    reset: "",
+    windows: [
+      { label: "5h", usagePct: 20, reset: "", resetInSeconds: 5400 },
+      { label: "W", usagePct: 5, reset: "", resetInSeconds: 172800 }
+    ]
+  };
+
+  const subagents: SubagentTrackerResult = {
+    hasActiveSubagents: true,
+    agents: [
+      { index: 0, id: "root", role: "root", status: "idle", isRunning: false, activeTokens: 2200, cumulativeTokens: 45000 },
+      { index: 1, id: "sub1", role: "dev", status: "running", isRunning: true, activeTokens: 15000, cumulativeTokens: 40000 },
+      { index: 2, id: "sub2", role: "reviewer", status: "running", isRunning: true, activeTokens: 8000, cumulativeTokens: 22000 },
+      { index: 3, id: "sub3", role: "test-engineer", status: "idle", isRunning: false, activeTokens: 5000, cumulativeTokens: 10000 },
+      { index: 4, id: "sub4", role: "writer", status: "idle", isRunning: false, activeTokens: 4000, cumulativeTokens: 8000 }
+    ]
+  };
+
+  const t1Expected = "[◆ 2.2k/45k] [4:doc 4k/8k ○] [3:test 5k/10k ○] [2:rev 8k/22k ●] [1:dev 15k/40k ●]";
+  const t2Expected = "[◆ 2.2k/45k] [4:4k/8k ○] [3:5k/10k ○] [2:8k/22k ●] [1:15k/40k ●]";
+  const t3Expected = "[◆ 2.2k/45k] [2:rev 8k/22k ●] [1:dev 15k/40k ●] [+2 idle]";
+  const t3CompactExpected = "[◆ 2.2k/45k] [2:8k/22k ●] [1:15k/40k ●] [+2 idle]";
+  const t4Expected = "[◆ 2.2k/45k] [2 active]";
+  const t5Expected = "[◆ 2.2k/45k]";
+
+  // Tier 1: Full roles
+  const t1 = renderUnifiedLine2(payload, config, visibleLen(t1Expected), quota, subagents);
+  assert.equal(t1, t1Expected);
+
+  // Tier 2: Compact roles
+  const t2 = renderUnifiedLine2(payload, config, visibleLen(t2Expected), quota, subagents);
+  assert.equal(t2, t2Expected);
+
+  // Tier 3: Active priority full roles + [+N idle]
+  const t3 = renderUnifiedLine2(payload, config, visibleLen(t3Expected), quota, subagents);
+  assert.equal(t3, t3Expected);
+
+  // Tier 3: Active priority compact roles + [+N idle]
+  const t3c = renderUnifiedLine2(payload, config, visibleLen(t3CompactExpected), quota, subagents);
+  assert.equal(t3c, t3CompactExpected);
+
+  // Tier 4: Active count badge
+  const t4 = renderUnifiedLine2(payload, config, visibleLen(t4Expected), quota, subagents);
+  assert.equal(t4, t4Expected);
+
+  // Tier 5: Root badge alone
+  const t5 = renderUnifiedLine2(payload, config, visibleLen(t5Expected), quota, subagents);
+  assert.equal(t5, t5Expected);
+
+  // Truncated root
+  const tTrunc = renderUnifiedLine2(payload, config, 6, quota, subagents);
+  assert.equal(visibleLen(tTrunc), 6);
+
+  // Width bounded assertion across all widths 5-150
+  for (let w = 5; w <= 150; w++) {
+    const rendered = renderUnifiedLine2(payload, config, w, quota, subagents);
+    assert.ok(visibleLen(rendered) <= w, `Overflow at width ${w}: "${strip(rendered)}"`);
+  }
+});
+
+test("renderUnifiedLine2 without subagents renders root badge alone and fits width", () => {
+  const payload: Payload = {
+    conversation_id: "conv-nosub",
+    agent_state: "idle",
+    context_window: { total_input_tokens: 1000, total_output_tokens: 500 }
+  };
+  const config = { ...defaultConfig(), color: false };
+  const quota: QuotaDisplay = {
+    hasQuota: true,
+    usagePct: 10,
+    reset: "",
+    windows: [{ label: "5h", usagePct: 10, reset: "", resetInSeconds: 3600 }]
+  };
+
+  const expectedRoot = "[◆ 1k/1.5k]";
+  assert.equal(renderUnifiedLine2(payload, config, 100, quota, null), expectedRoot);
+  assert.equal(renderUnifiedLine2(payload, config, visibleLen(expectedRoot), quota, null), expectedRoot);
+  assert.equal(visibleLen(renderUnifiedLine2(payload, config, 5, quota, null)), 5);
+});
+
+test("multiline line2Style config: unified default vs classic", () => {
+  const payload = fixturePayload();
+  payload.terminal_width = 120;
+  const cache: Cache = {
+    models: {
+      "Gemini 3.5 Flash (Medium)": {
+        remainingFraction: 0.8,
+        resetTime: "2026-05-19T14:00:00Z"
+      }
+    }
+  };
+
+  // Default config has line2Style: "unified"
+  assert.equal(defaultConfig().line2Style, "unified");
+  const outDefault = render(payload, { config: { ...defaultConfig(), color: false }, quota: cache, now: new Date("2026-05-19T12:00:00Z") });
+  const linesDefault = outDefault.split("\n");
+  assert.equal(linesDefault.length, 2);
+
+  // Line 1 contains unbracketed quota segments prepended before model name
+  assert.match(linesDefault[0], /^5h 80\.0%/);
+  assert.match(linesDefault[0], /5h 80\.0% \(2\.0h\) │ .* 3\.5 Flash Med/);
+  assert.doesNotMatch(linesDefault[0], /\[5h/);
+
+  // Line 2 shows only root agent badge directly (without quota chip)
+  assert.equal(linesDefault[1], "[◆ 125k/130k]");
+  assert.doesNotMatch(linesDefault[1], /5h/);
+  assert.doesNotMatch(linesDefault[1], /Ctx/);
+
+  // Explicit line2Style: "classic" renders model on line 1, Ctx progress bar line on line 2
+  const outClassic = render(payload, { config: { ...defaultConfig(), line2Style: "classic", color: false }, quota: cache, now: new Date("2026-05-19T12:00:00Z") });
+  const linesClassic = outClassic.split("\n");
+  assert.equal(linesClassic.length, 2);
+  assert.doesNotMatch(linesClassic[0], /^5h/);
+  assert.match(linesClassic[0], /3\.5 Flash Med/);
+  assert.match(linesClassic[1], /^Ctx /);
+  assert.match(linesClassic[1], /80\.00% left/);
+
+  // Config merge parsing for line2_style and line2Style
+  assert.equal(parseConfig(JSON.stringify({ line2_style: "classic" })).line2Style, "classic");
+  assert.equal(parseConfig(JSON.stringify({ line2_style: "unified" })).line2Style, "unified");
+  assert.equal(parseConfig(JSON.stringify({ line2Style: "classic" })).line2Style, "classic");
+  assert.equal(parseConfig(JSON.stringify({ line2Style: "unified" })).line2Style, "unified");
+  assert.equal(parseConfig(JSON.stringify({ line2_style: "other" })).line2Style, "unified");
+});
+
+test("multiline line2Style unified Line 1 responsive degradation tiers", () => {
+  const payload: Payload = {
+    model: { display_name: "Claude Sonnet 4.6" },
+    cwd: "/workspace/project",
+    plan_tier: "Google AI Pro",
+    agent_state: "idle",
+    cost: { total_usd: 0.05 },
+    quota: {
+      "3p-5h": { remaining_fraction: 0.8, reset_time: "2026-05-19T13:30:00Z", reset_in_seconds: 5400 },
+      "3p-weekly": { remaining_fraction: 0.95, reset_time: "2026-05-21T12:00:00Z", reset_in_seconds: 172800 }
+    }
+  };
+  const config: Config = { ...defaultConfig(), line2Style: "unified", color: false, showIcons: false };
+  const opts = { config, gitBranch: "main", now: new Date("2026-05-19T12:00:00Z") };
+
+  // Tier 1: Quota with reset + modelSegment + cwd + git + state + cost
+  const t1Want = "5h 80.0% (1.5h) │ W 95.0% (2.0d) │ Sonnet 4.6 | Pro │ project │ main │ Idle │ $0.05";
+  // Tier 2: Quota without reset + modelSegment + cwd + git + state + cost
+  const t2Want = "5h 80.0% │ W 95.0% │ Sonnet 4.6 | Pro │ project │ main │ Idle │ $0.05";
+  // Tier 3: Quota without reset + modelSegment + cwd + git + state
+  const t3Want = "5h 80.0% │ W 95.0% │ Sonnet 4.6 | Pro │ project │ main │ Idle";
+  // Tier 4: Quota without reset + modelSegment + git + state
+  const t4Want = "5h 80.0% │ W 95.0% │ Sonnet 4.6 | Pro │ main │ Idle";
+  // Tier 5: Quota without reset + modelSegment + state
+  const t5Want = "5h 80.0% │ W 95.0% │ Sonnet 4.6 | Pro │ Idle";
+  // Tier 6: modelSegment + state
+  const t6Want = "Sonnet 4.6 | Pro │ Idle";
+  // Tier 7: modelSegment
+  const t7Want = "Sonnet 4.6 | Pro";
+
+  assert.equal(render({ ...payload, terminal_width: visibleLen(t1Want) }, opts).split("\n")[0], t1Want);
+  assert.equal(render({ ...payload, terminal_width: visibleLen(t2Want) }, opts).split("\n")[0], t2Want);
+  assert.equal(render({ ...payload, terminal_width: visibleLen(t3Want) }, opts).split("\n")[0], t3Want);
+  assert.equal(render({ ...payload, terminal_width: visibleLen(t4Want) }, opts).split("\n")[0], t4Want);
+  assert.equal(render({ ...payload, terminal_width: visibleLen(t5Want) }, opts).split("\n")[0], t5Want);
+  assert.equal(render({ ...payload, terminal_width: visibleLen(t6Want) }, opts).split("\n")[0], t6Want);
+  assert.equal(render({ ...payload, terminal_width: visibleLen(t7Want) }, opts).split("\n")[0], t7Want);
+
+  // Tier 8: fit(modelSegment, width)
+  const t8 = render({ ...payload, terminal_width: 10 }, opts).split("\n")[0];
+  assert.equal(visibleLen(t8), 10);
+
+  // Verify all widths 5-150 remain within terminal width
+  for (let w = 5; w <= 150; w++) {
+    const out = render({ ...payload, terminal_width: w }, opts);
+    for (const line of out.split("\n")) {
+      assert.ok(visibleLen(line) <= w, `Width ${w} overflowed by: "${line}"`);
+    }
+  }
+});
+
+test("multiline line2Style unified Line 2 lifecycle transitions with subagents", () => {
+  const payload = fixturePayload();
+  const subagentRunning: SubagentTrackerResult = {
+    hasActiveSubagents: true,
+    agents: [
+      { index: 0, id: "root", role: "root", status: "thinking", isRunning: false, activeTokens: 2200, cumulativeTokens: 45000 },
+      { index: 1, id: "sub1", role: "dev", status: "running", isRunning: true, activeTokens: 15000, cumulativeTokens: 40000 }
+    ]
+  };
+
+  const subagentsCompleted: SubagentTrackerResult = {
+    hasActiveSubagents: false,
+    agents: [
+      { index: 0, id: "root", role: "root", status: "idle", isRunning: false, activeTokens: 2200, cumulativeTokens: 45000 },
+      { index: 1, id: "sub1", role: "dev", status: "idle", isRunning: false, activeTokens: 15000, cumulativeTokens: 40000 }
+    ]
+  };
+
+  // Phase 1: Subagent running -> Line 2 displays [◆ active/cum] [1:dev ...] directly
+  const outRunning = render(payload, {
+    config: { ...defaultConfig(), multiline: true, line2Style: "unified", color: false },
+    gitBranch: "main",
+    subagents: subagentRunning
+  });
+  const linesRunning = outRunning.split("\n");
+  assert.equal(linesRunning.length, 2);
+  assert.match(linesRunning[0], /^5h -- │ W --/);
+  assert.match(linesRunning[1], /^\[◆ 2\.2k\/45k\] \[1:dev 15k\/40k ●\]$/);
+  assert.doesNotMatch(linesRunning[1], /5h/);
+
+  // Phase 2: Subagents completed -> Line 2 displays [◆ active/cum] alone
+  const outCompleted = render(payload, {
+    config: { ...defaultConfig(), multiline: true, line2Style: "unified", color: false },
+    gitBranch: "main",
+    subagents: subagentsCompleted
+  });
+  const linesCompleted = outCompleted.split("\n");
+  assert.equal(linesCompleted.length, 2);
+  assert.match(linesCompleted[0], /^5h -- │ W --/);
+  assert.equal(linesCompleted[1], "[◆ 2.2k/45k]");
+  assert.doesNotMatch(linesCompleted[1], /\[1:/);
+});
+
+
 
