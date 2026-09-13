@@ -354,6 +354,35 @@ export function formatQuotaChip(quota: QuotaDisplay, config: Config, includeRese
   return `${openBracket}${formatQuotaSegments(quota, config, includeReset).join(sep)}${closeBracket}`;
 }
 
+function fitSubagentsWithOverflow(
+  rootBadge: string,
+  activeSubagents: AgentTokenStats[],
+  idleSubagents: AgentTokenStats[],
+  useFullRole: boolean,
+  colors: boolean,
+  width: number
+): string | null {
+  const activeBadges = activeSubagents.map(s => formatSubagentBadge(s, useFullRole, colors));
+  const idleBadges = idleSubagents.map(s => formatSubagentBadge(s, useFullRole, colors));
+
+  const minIdle = activeSubagents.length > 0 ? 0 : 1;
+
+  for (let numIdle = idleBadges.length - 1; numIdle >= minIdle; numIdle--) {
+    const includedIdle = idleBadges.slice(0, numIdle);
+    const omittedIdleCount = idleBadges.length - numIdle;
+    const overflowBadge = omittedIdleCount > 0 ? colorize(`[+${omittedIdleCount} idle]`, colorMuted, colors) : "";
+
+    const parts = [rootBadge, ...activeBadges, ...includedIdle];
+    if (overflowBadge) parts.push(overflowBadge);
+
+    const candidate = parts.join(" ");
+    if (visibleLen(candidate) <= width) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
 export function renderUnifiedLine2(
   payload: Payload,
   config: Config,
@@ -376,16 +405,15 @@ export function renderUnifiedLine2(
     ? subagents.agents.filter(s => s.index > 0).sort((a, b) => b.index - a.index)
     : []) as AgentTokenStats[];
 
-  const activeSubagents = subagentsList.filter(s => s.isRunning);
-  const hasActive = (subagents?.hasActiveSubagents ?? activeSubagents.length > 0) && activeSubagents.length > 0;
-
-  // When no subagents are active, Line 2 displays: [◆ active/cum]
-  if (!hasActive || subagentsList.length === 0) {
+  if (subagentsList.length === 0) {
     if (visibleLen(rootBadge) <= width) {
       return rootBadge;
     }
     return fit(rootBadge, width);
   }
+
+  const activeSubagents = subagentsList.filter(s => s.isRunning);
+  const idleSubagents = subagentsList.filter(s => !s.isRunning);
 
   // Tier 1 (full roles): Root + All subagents (full role)
   const tier1Parts = [rootBadge, ...subagentsList.map(s => formatSubagentBadge(s, true, colors))];
@@ -401,30 +429,40 @@ export function renderUnifiedLine2(
     return tier2;
   }
 
-  // Tier 3 (active priority): Root + Active subagents (full role or compact) + [+N idle] badge
-  const idleCount = subagentsList.length - activeSubagents.length;
-  const idleBadge = idleCount > 0 ? colorize(`[+${idleCount} idle]`, colorMuted, colors) : "";
-
-  const tier3Parts = [rootBadge, ...activeSubagents.map(s => formatSubagentBadge(s, true, colors))];
-  if (idleBadge) tier3Parts.push(idleBadge);
-  const tier3 = tier3Parts.join(" ");
-  if (visibleLen(tier3) <= width) {
+  // Tier 3 (prioritized progressive fit with overflow):
+  // Check full roles first, then compact roles
+  const tier3 = fitSubagentsWithOverflow(rootBadge, activeSubagents, idleSubagents, true, colors, width);
+  if (tier3 !== null) {
     return tier3;
   }
 
-  const tier3CompactParts = [rootBadge, ...activeSubagents.map(s => formatSubagentBadge(s, false, colors))];
-  if (idleBadge) tier3CompactParts.push(idleBadge);
-  const tier3Compact = tier3CompactParts.join(" ");
-  if (visibleLen(tier3Compact) <= width) {
+  const tier3Compact = fitSubagentsWithOverflow(rootBadge, activeSubagents, idleSubagents, false, colors, width);
+  if (tier3Compact !== null) {
     return tier3Compact;
   }
 
-  // Tier 4 (active count): Root + [N active] badge
-  const activeBadge = colorize(`[${activeSubagents.length} active]`, colorGreen, colors);
-  const tier4Parts = [rootBadge, activeBadge];
-  const tier4 = tier4Parts.join(" ");
-  if (visibleLen(tier4) <= width) {
-    return tier4;
+  // Tier 4:
+  // If active subagents exist and cannot fit badges, try [rootBadge, "[N active]"] (or with [+M idle] if space allows)
+  // If no active subagents exist (all idle) and individual badges could not fit, check if [rootBadge, "[+N idle]"] fits
+  if (activeSubagents.length > 0) {
+    const activeBadge = colorize(`[${activeSubagents.length} active]`, colorGreen, colors);
+    if (idleSubagents.length > 0) {
+      const idleBadge = colorize(`[+${idleSubagents.length} idle]`, colorMuted, colors);
+      const candidateWithIdle = [rootBadge, activeBadge, idleBadge].join(" ");
+      if (visibleLen(candidateWithIdle) <= width) {
+        return candidateWithIdle;
+      }
+    }
+    const candidateActiveOnly = [rootBadge, activeBadge].join(" ");
+    if (visibleLen(candidateActiveOnly) <= width) {
+      return candidateActiveOnly;
+    }
+  } else if (idleSubagents.length > 0) {
+    const idleBadge = colorize(`[+${idleSubagents.length} idle]`, colorMuted, colors);
+    const candidateIdleOnly = [rootBadge, idleBadge].join(" ");
+    if (visibleLen(candidateIdleOnly) <= width) {
+      return candidateIdleOnly;
+    }
   }
 
   // Tier 5 (root badge alone): Root badge alone

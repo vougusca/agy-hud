@@ -1208,7 +1208,7 @@ test("multiline line2Style unified Line 2 lifecycle transitions with subagents",
   assert.match(linesRunning[1], /^\[◆ 2\.2k\/45k\] \[1:dev 15k\/40k ●\]$/);
   assert.doesNotMatch(linesRunning[1], /5h/);
 
-  // Phase 2: Subagents completed -> Line 2 displays [◆ active/cum] alone
+  // Phase 2: Subagents completed -> Line 2 retains idle subagent badge
   const outCompleted = render(payload, {
     config: { ...defaultConfig(), multiline: true, line2Style: "unified", color: false },
     gitBranch: "main",
@@ -1217,8 +1217,111 @@ test("multiline line2Style unified Line 2 lifecycle transitions with subagents",
   const linesCompleted = outCompleted.split("\n");
   assert.equal(linesCompleted.length, 2);
   assert.match(linesCompleted[0], /^5h -- │ W --/);
-  assert.equal(linesCompleted[1], "[◆ 2.2k/45k]");
-  assert.doesNotMatch(linesCompleted[1], /\[1:/);
+  assert.equal(linesCompleted[1], "[◆ 2.2k/45k] [1:dev 15k/40k ○]");
+  assert.doesNotMatch(linesCompleted[1], /5h/);
+});
+
+test("renderUnifiedLine2 with all subagents idle across degradation tiers", () => {
+  const payload = fixturePayload();
+  const config = { ...defaultConfig(), color: false, multiline: true, line2Style: "unified" as const };
+  const quota: QuotaDisplay = { hasQuota: false, usagePct: 0, reset: "", windows: [] };
+
+  const subagents: SubagentTrackerResult = {
+    hasActiveSubagents: false,
+    agents: [
+      { index: 0, id: "root", role: "root", status: "idle", isRunning: false, activeTokens: 2200, cumulativeTokens: 45000 },
+      { index: 1, id: "sub1", role: "dev", status: "idle", isRunning: false, activeTokens: 15000, cumulativeTokens: 40000 },
+      { index: 2, id: "sub2", role: "reviewer", status: "idle", isRunning: false, activeTokens: 8000, cumulativeTokens: 22000 },
+      { index: 3, id: "sub3", role: "test-engineer", status: "idle", isRunning: false, activeTokens: 5000, cumulativeTokens: 10000 },
+      { index: 4, id: "sub4", role: "writer", status: "idle", isRunning: false, activeTokens: 4000, cumulativeTokens: 8000 }
+    ]
+  };
+
+  const t1Expected = "[◆ 2.2k/45k] [4:doc 4k/8k ○] [3:test 5k/10k ○] [2:rev 8k/22k ○] [1:dev 15k/40k ○]";
+  const t2Expected = "[◆ 2.2k/45k] [4:4k/8k ○] [3:5k/10k ○] [2:8k/22k ○] [1:15k/40k ○]";
+  const t3Full2Expected = "[◆ 2.2k/45k] [4:doc 4k/8k ○] [3:test 5k/10k ○] [+2 idle]";
+  const t3Full1Expected = "[◆ 2.2k/45k] [4:doc 4k/8k ○] [+3 idle]";
+  const t3Compact1Expected = "[◆ 2.2k/45k] [4:4k/8k ○] [+3 idle]";
+  const t4Expected = "[◆ 2.2k/45k] [+4 idle]";
+  const t5Expected = "[◆ 2.2k/45k]";
+
+  // Tier 1: Ample width (all full roles)
+  const t1 = renderUnifiedLine2(payload, config, visibleLen(t1Expected), quota, subagents);
+  assert.equal(t1, t1Expected);
+
+  // Tier 2: Compact roles
+  const t2 = renderUnifiedLine2(payload, config, visibleLen(t2Expected), quota, subagents);
+  assert.equal(t2, t2Expected);
+
+  // Tier 3: Progressive overflow full roles (2 fit, 2 idle)
+  const t3f2 = renderUnifiedLine2(payload, config, visibleLen(t3Full2Expected), quota, subagents);
+  assert.equal(t3f2, t3Full2Expected);
+
+  // Tier 3: Progressive overflow full roles (1 fits, 3 idle)
+  const t3f1 = renderUnifiedLine2(payload, config, visibleLen(t3Full1Expected), quota, subagents);
+  assert.equal(t3f1, t3Full1Expected);
+
+  // Tier 3: Progressive overflow compact roles (1 compact fits, 3 idle)
+  const t3c1 = renderUnifiedLine2(payload, config, visibleLen(t3Compact1Expected), quota, subagents);
+  assert.equal(t3c1, t3Compact1Expected);
+
+  // Tier 4: No individual badges fit, collapse to root + [+N idle]
+  const t4 = renderUnifiedLine2(payload, config, visibleLen(t4Expected), quota, subagents);
+  assert.equal(t4, t4Expected);
+
+  // Tier 5: Root badge alone
+  const t5 = renderUnifiedLine2(payload, config, visibleLen(t5Expected), quota, subagents);
+  assert.equal(t5, t5Expected);
+
+  // Tier 5: Truncated root
+  const tTrunc = renderUnifiedLine2(payload, config, 6, quota, subagents);
+  assert.equal(visibleLen(tTrunc), 6);
+
+  // Width bounded test across widths 5 to 150 verifying no overflow
+  for (let w = 5; w <= 150; w++) {
+    const rendered = renderUnifiedLine2(payload, config, w, quota, subagents);
+    assert.ok(visibleLen(rendered) <= w, `Overflow at width ${w}: "${strip(rendered)}"`);
+  }
+});
+
+test("renderUnifiedLine2 mixed active and idle subagents prioritizes active over idle", () => {
+  const payload = fixturePayload();
+  const config = { ...defaultConfig(), color: false, multiline: true, line2Style: "unified" as const };
+  const quota: QuotaDisplay = { hasQuota: false, usagePct: 0, reset: "", windows: [] };
+
+  const subagents: SubagentTrackerResult = {
+    hasActiveSubagents: true,
+    agents: [
+      { index: 0, id: "root", role: "root", status: "idle", isRunning: false, activeTokens: 2200, cumulativeTokens: 45000 },
+      { index: 1, id: "sub1", role: "dev", status: "running", isRunning: true, activeTokens: 15000, cumulativeTokens: 40000 },
+      { index: 2, id: "sub2", role: "reviewer", status: "idle", isRunning: false, activeTokens: 8000, cumulativeTokens: 22000 },
+      { index: 3, id: "sub3", role: "test-engineer", status: "idle", isRunning: false, activeTokens: 5000, cumulativeTokens: 10000 },
+    ]
+  };
+
+  // Tier 1: [◆ 2.2k/45k] [3:test 5k/10k ○] [2:rev 8k/22k ○] [1:dev 15k/40k ●]
+  const t1Expected = "[◆ 2.2k/45k] [3:test 5k/10k ○] [2:rev 8k/22k ○] [1:dev 15k/40k ●]";
+  // Tier 2: [◆ 2.2k/45k] [3:5k/10k ○] [2:8k/22k ○] [1:15k/40k ●]
+  const t2Expected = "[◆ 2.2k/45k] [3:5k/10k ○] [2:8k/22k ○] [1:15k/40k ●]";
+  // Tier 3: Active preserved with full roles, idle collapsed to [+2 idle]
+  const t3Expected = "[◆ 2.2k/45k] [1:dev 15k/40k ●] [+2 idle]";
+  // Tier 3 Compact: Active preserved with compact roles, idle collapsed to [+2 idle]
+  const t3CompactExpected = "[◆ 2.2k/45k] [1:15k/40k ●] [+2 idle]";
+  // Tier 4: active badge + idle badge: [◆ 2.2k/45k] [1 active] [+2 idle]
+  const t4BothExpected = "[◆ 2.2k/45k] [1 active] [+2 idle]";
+  const t4ActiveExpected = "[◆ 2.2k/45k] [1 active]";
+
+  assert.equal(renderUnifiedLine2(payload, config, visibleLen(t1Expected), quota, subagents), t1Expected);
+  assert.equal(renderUnifiedLine2(payload, config, visibleLen(t2Expected), quota, subagents), t2Expected);
+  assert.equal(renderUnifiedLine2(payload, config, visibleLen(t3Expected), quota, subagents), t3Expected);
+  assert.equal(renderUnifiedLine2(payload, config, visibleLen(t3CompactExpected), quota, subagents), t3CompactExpected);
+  assert.equal(renderUnifiedLine2(payload, config, visibleLen(t4BothExpected), quota, subagents), t4BothExpected);
+  assert.equal(renderUnifiedLine2(payload, config, visibleLen(t4ActiveExpected), quota, subagents), t4ActiveExpected);
+
+  for (let w = 5; w <= 150; w++) {
+    const rendered = renderUnifiedLine2(payload, config, w, quota, subagents);
+    assert.ok(visibleLen(rendered) <= w, `Overflow at width ${w}: "${strip(rendered)}"`);
+  }
 });
 
 
