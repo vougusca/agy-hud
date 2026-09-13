@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+- **Subagent HUD Badges**: Live subagent token HUD badges replacing Quota line when active subagents are detected.
+- **Protobuf Parser**: Zero-dependency binary protobuf parser for `UsageMetadata` and session context tree decoding.
+- **Monotonic Ordering**: Monotonic `rowid ASC` subagent ordering preserving execution sequence.
+- **Polling Efficiency**: 3-tier disk-efficient polling with WAL stat guard to minimize disk I/O.
+- **Role Abbreviations**: Compact 3-4 character role abbreviations (`rev`, `dbg`, `dev`, `ops`, `exp`, `plan`, `test`, `web`, `doc`).
+
+### Fixed
 - Fix loopback quota probe TLS handshake errors when querying CLI language server by ingesting `ANTIGRAVITY_LS_ADDRESS` and `ANTIGRAVITY_CSRF_TOKEN`.
 - Prevent erroneous plain HTTP fallbacks against HTTPS endpoints when unauthenticated or rejected by server.
 - Suppress visible Windows console window flashes by adding `windowsHide: true` to background detached spawns and `-WindowStyle Hidden` to PowerShell discovery.

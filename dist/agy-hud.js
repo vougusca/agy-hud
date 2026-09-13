@@ -157,13 +157,14 @@ __export(main_exports, {
   quotaCacheWritePath: () => quotaCacheWritePath,
   renderStatusline: () => renderStatusline,
   runCli: () => runCli,
+  subagentCachePath: () => subagentCachePath,
   userConfigPath: () => userConfigPath,
   version: () => version
 });
 module.exports = __toCommonJS(main_exports);
-var import_node_fs5 = __toESM(require("node:fs"));
-var import_node_os = __toESM(require("node:os"));
-var import_node_path4 = __toESM(require("node:path"));
+var import_node_fs6 = __toESM(require("node:fs"));
+var import_node_os2 = __toESM(require("node:os"));
+var import_node_path5 = __toESM(require("node:path"));
 var import_node_child_process2 = require("node:child_process");
 
 // src/config.ts
@@ -179,6 +180,7 @@ function defaultConfig() {
     showAgentState: true,
     showCost: true,
     showIcons: true,
+    showSubagents: true,
     contextValue: "percent",
     usageValue: "remaining",
     debug: false,
@@ -215,6 +217,8 @@ function merge(base, patch) {
   if (typeof patch.show_agent_state === "boolean") base.showAgentState = patch.show_agent_state;
   if (typeof patch.show_cost === "boolean") base.showCost = patch.show_cost;
   if (typeof patch.show_icons === "boolean") base.showIcons = patch.show_icons;
+  if (typeof patch.show_subagents === "boolean") base.showSubagents = patch.show_subagents;
+  if (typeof patch.showSubagents === "boolean") base.showSubagents = patch.showSubagents;
   if (typeof patch.context_value === "string" && patch.context_value !== "") base.contextValue = patch.context_value;
   if (typeof patch.usage_value === "string" && patch.usage_value !== "") base.usageValue = patch.usage_value;
   if (typeof patch.debug === "boolean") base.debug = patch.debug;
@@ -954,11 +958,95 @@ function render(payload, opts) {
   const stateLabel = state(payload.agent_state ?? "");
   const quota = quotaInfo(opts.quota, modelDisplay, payload.quota, opts.now ?? /* @__PURE__ */ new Date());
   if (config.multiline) {
-    return renderMultiline(payload, config, width, modelSegment, ctxPct, quota, opts.gitBranch ?? "", stateLabel);
+    return renderMultiline(payload, config, width, modelSegment, ctxPct, quota, opts.gitBranch ?? "", stateLabel, opts.subagents);
   }
-  return renderSingleLine(payload, config, width, modelSegment, ctxPct, quota, stateLabel);
+  return renderSingleLine(payload, config, width, modelSegment, ctxPct, quota, stateLabel, opts.subagents);
 }
-function renderMultiline(payload, config, width, modelSegment, ctxPct, quota, branch2, stateLabel) {
+function shortenRole(role) {
+  if (!role || typeof role !== "string") return "";
+  const r = role.trim().toLowerCase();
+  if (r === "code-reviewer" || r === "reviewer") return "rev";
+  if (r === "debugger") return "dbg";
+  if (r === "dev") return "dev";
+  if (r === "devops") return "ops";
+  if (r === "explorer") return "exp";
+  if (r === "orchestrator") return "orch";
+  if (r === "planner") return "plan";
+  if (r === "test-engineer" || r === "tester") return "test";
+  if (r === "web-researcher" || r === "researcher") return "web";
+  if (r === "writer") return "doc";
+  if (r === "subagent") return "sub";
+  return r.length > 4 ? r.slice(0, 4) : r;
+}
+function formatRootBadge(root, colors) {
+  const active = formatTokens(root.activeTokens);
+  const cum = formatTokens(root.cumulativeTokens);
+  const text = `[\u25C6 ${active}/${cum}]`;
+  return colorize(text, colorCyan, colors);
+}
+function formatSubagentBadge(agent, includeRole, colors) {
+  const role = shortenRole(agent.role) || "sub";
+  const rolePrefix = includeRole ? `${agent.index}:${role} ` : `${agent.index}:`;
+  const active = formatTokens(agent.activeTokens);
+  const cum = formatTokens(agent.cumulativeTokens);
+  const dotGlyph = agent.isRunning ? "\u25CF" : "\u25CB";
+  const dotColor = agent.isRunning ? colorGreen : colorMuted;
+  const dot = colorize(dotGlyph, dotColor, colors);
+  return `[${rolePrefix}${active}/${cum} ${dot}]`;
+}
+function renderSubagentLine(stats, width, colors) {
+  const root = stats.find((s) => s.index === 0) ?? {
+    index: 0,
+    id: "",
+    role: "root",
+    status: "idle",
+    isRunning: false,
+    activeTokens: 0,
+    cumulativeTokens: 0
+  };
+  const subagents = stats.filter((s) => s.index > 0);
+  const rootBadge = formatRootBadge(root, colors);
+  if (subagents.length === 0) {
+    return fit(rootBadge, width);
+  }
+  const tier1Badges = [rootBadge, ...subagents.map((s) => formatSubagentBadge(s, true, colors))];
+  const tier1 = tier1Badges.join(" ");
+  if (visibleLen(tier1) <= width) {
+    return tier1;
+  }
+  const tier2Badges = [rootBadge, ...subagents.map((s) => formatSubagentBadge(s, false, colors))];
+  const tier2 = tier2Badges.join(" ");
+  if (visibleLen(tier2) <= width) {
+    return tier2;
+  }
+  const activeSubagents = subagents.filter((s) => s.isRunning);
+  const idleCount = subagents.length - activeSubagents.length;
+  const idleBadge = idleCount > 0 ? colorize(`[+${idleCount} idle]`, colorMuted, colors) : "";
+  if (activeSubagents.length > 0) {
+    const tier3Parts = [rootBadge, ...activeSubagents.map((s) => formatSubagentBadge(s, true, colors))];
+    if (idleBadge) tier3Parts.push(idleBadge);
+    const tier3 = tier3Parts.join(" ");
+    if (visibleLen(tier3) <= width) {
+      return tier3;
+    }
+    const tier3CompactParts = [rootBadge, ...activeSubagents.map((s) => formatSubagentBadge(s, false, colors))];
+    if (idleBadge) tier3CompactParts.push(idleBadge);
+    const tier3Compact = tier3CompactParts.join(" ");
+    if (visibleLen(tier3Compact) <= width) {
+      return tier3Compact;
+    }
+  }
+  const activeCount = activeSubagents.length;
+  const activeBadge = activeCount > 0 ? colorize(`[${activeCount} active]`, colorGreen, colors) : "";
+  const tier4Parts = [rootBadge];
+  if (activeBadge) tier4Parts.push(activeBadge);
+  const tier4 = tier4Parts.join(" ");
+  if (visibleLen(tier4) <= width) {
+    return tier4;
+  }
+  return fit(tier4, width);
+}
+function renderMultiline(payload, config, width, modelSegment, ctxPct, quota, branch2, stateLabel, subagents) {
   const line1Parts = [modelSegment];
   if (config.showCWD && payload.cwd) {
     line1Parts.push(colorize(withIcon(config, " ", "") + import_node_path3.default.basename(payload.cwd), colorYellow, config.color));
@@ -984,6 +1072,16 @@ function renderMultiline(payload, config, width, modelSegment, ctxPct, quota, br
     line1 = modelSegment;
   }
   line1 = fit(line1, width);
+  let line2;
+  if (config.showSubagents !== false && subagents && subagents.hasActiveSubagents) {
+    line2 = renderSubagentLine(subagents.agents, width, config.color);
+  } else {
+    line2 = renderResourceLine(payload, config, width, ctxPct, quota);
+  }
+  return `${line1}
+${line2}`;
+}
+function renderResourceLine(payload, config, width, ctxPct, quota) {
   let ctx = "Ctx ";
   if (config.showProgressBar) {
     ctx += `${progressBar(ctxPct, 10, config.color)} `;
@@ -1027,11 +1125,20 @@ function renderMultiline(payload, config, width, modelSegment, ctxPct, quota, br
   if (visibleLen(line2) > width) {
     line2 = coloredPct(ctxPct, ctxPct, config);
   }
-  line2 = fit(line2, width);
-  return `${line1}
-${line2}`;
+  return fit(line2, width);
 }
-function renderSingleLine(payload, config, width, modelSegment, ctxPct, quota, stateLabel) {
+function renderSingleLine(payload, config, width, modelSegment, ctxPct, quota, stateLabel, subagents) {
+  let subagentBadge = "";
+  if (config.showSubagents !== false && subagents?.hasActiveSubagents) {
+    const active = subagents.agents.filter((a) => a.index > 0 && a.isRunning);
+    if (active.length === 1) {
+      const dot = colorize("\u25CF", colorGreen, config.color);
+      subagentBadge = `[${active[0].index}:${shortenRole(active[0].role) || "sub"} ${dot}]`;
+    } else if (active.length > 1) {
+      const dot = colorize("\u25CF", colorGreen, config.color);
+      subagentBadge = `[${active.length} active ${dot}]`;
+    }
+  }
   const coloredBadge = modelSegment;
   const ctx = `Ctx ${contextValue(config, payload.context_window, ctxPct)}`;
   let tokens = tokenDetail(payload.context_window);
@@ -1055,10 +1162,11 @@ function renderSingleLine(payload, config, width, modelSegment, ctxPct, quota, s
     bar = progressBar(ctxPct, 10, config.color);
   }
   const levels = [
-    [coloredBadge, ctx, tokens, bar, usage2, stateText, costText],
-    [coloredBadge, ctx, tokens, bar, usage2, stateText],
-    [coloredBadge, ctx, bar, usage2, stateText],
-    [coloredBadge, ctx, usage2, stateText],
+    [coloredBadge, subagentBadge, ctx, tokens, bar, usage2, stateText, costText],
+    [coloredBadge, subagentBadge, ctx, tokens, bar, usage2, stateText],
+    [coloredBadge, subagentBadge, ctx, bar, usage2, stateText],
+    [coloredBadge, subagentBadge, ctx, usage2, stateText],
+    [coloredBadge, subagentBadge, ctx, stateText],
     [coloredBadge, ctx, stateText],
     [ctx, stateText],
     [coloredPct(ctxPct, ctxPct, config), stateLabel]
@@ -1327,7 +1435,11 @@ function formatTokens(n) {
     return `${Number((n / 1e6).toFixed(1))}M`;
   }
   if (n >= 1e3) {
-    return `${formatInt((n + 500) / 1e3)}k`;
+    if (n >= 1e4) {
+      return `${formatInt((n + 500) / 1e3)}k`;
+    }
+    const val = Number((n / 1e3).toFixed(1));
+    return `${val}k`;
   }
   return formatInt(n);
 }
@@ -1661,11 +1773,621 @@ function nerdFontLines(report) {
   return out;
 }
 
+// src/subagentTracker.ts
+var import_node_fs5 = __toESM(require("node:fs"));
+var import_node_os = __toESM(require("node:os"));
+var import_node_path4 = __toESM(require("node:path"));
+
+// src/protobuf.ts
+function readVarint(buffer, offset, end = buffer.length) {
+  let value = 0;
+  let shift = 0;
+  while (offset < end) {
+    if (shift >= 64) {
+      return null;
+    }
+    const byte = buffer[offset++];
+    value += (byte & 127) * Math.pow(2, shift);
+    shift += 7;
+    if ((byte & 128) === 0) {
+      return [value, offset];
+    }
+  }
+  return null;
+}
+function skipField(buffer, wireType, offset, end) {
+  switch (wireType) {
+    case 0: {
+      const res = readVarint(buffer, offset, end);
+      return res ? res[1] : null;
+    }
+    case 1: {
+      return offset + 8 <= end ? offset + 8 : null;
+    }
+    case 2: {
+      const res = readVarint(buffer, offset, end);
+      if (!res) return null;
+      const next = res[1] + res[0];
+      return next <= end ? next : null;
+    }
+    case 5: {
+      return offset + 4 <= end ? offset + 4 : null;
+    }
+    default:
+      return null;
+  }
+}
+function decodeUsageMetadata(buffer) {
+  let offset = 0;
+  const end = buffer.length;
+  let promptTokens = 0;
+  let candidatesTokens = 0;
+  let found = false;
+  while (offset < end) {
+    const res = readVarint(buffer, offset, end);
+    if (!res) break;
+    const [tag, nextOffset] = res;
+    offset = nextOffset;
+    const wireType = tag & 7;
+    const fieldNum = Math.floor(tag / 8);
+    if (fieldNum === 1 && wireType === 2) {
+      const lenRes = readVarint(buffer, offset, end);
+      if (!lenRes) break;
+      const [len, contentOffset] = lenRes;
+      if (contentOffset + len > end) break;
+      const subEnd = contentOffset + len;
+      let subOffset = contentOffset;
+      while (subOffset < subEnd) {
+        const subRes = readVarint(buffer, subOffset, subEnd);
+        if (!subRes) break;
+        const [subTag, subNext] = subRes;
+        subOffset = subNext;
+        const subWire = subTag & 7;
+        const subField = Math.floor(subTag / 8);
+        if (subField === 4 && subWire === 2) {
+          const uLenRes = readVarint(buffer, subOffset, subEnd);
+          if (!uLenRes) break;
+          const [uLen, uContentOffset] = uLenRes;
+          if (uContentOffset + uLen > subEnd) break;
+          const uEnd = uContentOffset + uLen;
+          let uCur = uContentOffset;
+          while (uCur < uEnd) {
+            const fRes = readVarint(buffer, uCur, uEnd);
+            if (!fRes) break;
+            const [fTag, fNext] = fRes;
+            uCur = fNext;
+            const fWire = fTag & 7;
+            const fNum = Math.floor(fTag / 8);
+            if (fNum === 2 && fWire === 0) {
+              const valRes = readVarint(buffer, uCur, uEnd);
+              if (!valRes) break;
+              promptTokens = valRes[0];
+              uCur = valRes[1];
+              found = true;
+            } else if (fNum === 3 && fWire === 0) {
+              const valRes = readVarint(buffer, uCur, uEnd);
+              if (!valRes) break;
+              candidatesTokens = valRes[0];
+              uCur = valRes[1];
+              found = true;
+            } else {
+              const next = skipField(buffer, fWire, uCur, uEnd);
+              if (next === null) break;
+              uCur = next;
+            }
+          }
+          subOffset = uEnd;
+        } else {
+          const next = skipField(buffer, subWire, subOffset, subEnd);
+          if (next === null) break;
+          subOffset = next;
+        }
+      }
+      offset = subEnd;
+    } else {
+      const next = skipField(buffer, wireType, offset, end);
+      if (next === null) break;
+      offset = next;
+    }
+  }
+  return found ? { promptTokens, candidatesTokens } : null;
+}
+var textDecoder = new TextDecoder("utf-8", { fatal: false });
+function getLengthDelimitedRange(buffer, start, end, targetField) {
+  let offset = start;
+  while (offset < end) {
+    const res = readVarint(buffer, offset, end);
+    if (!res) break;
+    const [tag, nextOffset] = res;
+    offset = nextOffset;
+    const wireType = tag & 7;
+    const fieldNum = Math.floor(tag / 8);
+    if (fieldNum === targetField && wireType === 2) {
+      const lenRes = readVarint(buffer, offset, end);
+      if (!lenRes) return null;
+      const [len, contentOffset] = lenRes;
+      if (contentOffset + len > end) return null;
+      return [contentOffset, contentOffset + len];
+    } else {
+      const next = skipField(buffer, wireType, offset, end);
+      if (next === null) break;
+      offset = next;
+    }
+  }
+  return null;
+}
+function extractContextTree(buffer) {
+  const l1 = getLengthDelimitedRange(buffer, 0, buffer.length, 1);
+  if (!l1) return null;
+  const l2 = getLengthDelimitedRange(buffer, l1[0], l1[1], 9);
+  if (!l2) return null;
+  const l3 = getLengthDelimitedRange(buffer, l2[0], l2[1], 10);
+  if (!l3) return null;
+  const l4 = getLengthDelimitedRange(buffer, l3[0], l3[1], 3);
+  if (!l4) return null;
+  const categories = {};
+  let cur = l4[0];
+  const end = l4[1];
+  while (cur < end) {
+    const res = readVarint(buffer, cur, end);
+    if (!res) break;
+    const [tag, nextOffset] = res;
+    cur = nextOffset;
+    const wireType = tag & 7;
+    const fieldNum = Math.floor(tag / 8);
+    if (fieldNum === 1 && wireType === 2) {
+      const lenRes = readVarint(buffer, cur, end);
+      if (!lenRes) break;
+      const [entryLen, entryStart] = lenRes;
+      cur = entryStart + entryLen;
+      if (cur > end) break;
+      let catName = "";
+      let catTok = 0;
+      const subItems = {};
+      let eCur = entryStart;
+      const eEnd = entryStart + entryLen;
+      while (eCur < eEnd) {
+        const eRes = readVarint(buffer, eCur, eEnd);
+        if (!eRes) break;
+        const [eTag, eNext] = eRes;
+        eCur = eNext;
+        const eWire = eTag & 7;
+        const eNum = Math.floor(eTag / 8);
+        if (eNum === 1 && eWire === 2) {
+          const sRes = readVarint(buffer, eCur, eEnd);
+          if (!sRes) break;
+          const [sLen, sStart] = sRes;
+          eCur = sStart + sLen;
+          if (eCur > eEnd) break;
+          catName = textDecoder.decode(buffer.subarray(sStart, sStart + sLen));
+        } else if (eNum === 4 && eWire === 0) {
+          const vRes = readVarint(buffer, eCur, eEnd);
+          if (!vRes) break;
+          catTok = vRes[0];
+          eCur = vRes[1];
+        } else if (eNum === 5 && eWire === 2) {
+          const subRes = readVarint(buffer, eCur, eEnd);
+          if (!subRes) break;
+          const [subLen, subStart] = subRes;
+          eCur = subStart + subLen;
+          if (eCur > eEnd) break;
+          let sCur = subStart;
+          const sEnd = subStart + subLen;
+          let subName = "";
+          let subTok = 0;
+          while (sCur < sEnd) {
+            const snRes = readVarint(buffer, sCur, sEnd);
+            if (!snRes) break;
+            const [snTag, snNext] = snRes;
+            sCur = snNext;
+            const snWire = snTag & 7;
+            const snNum = Math.floor(snTag / 8);
+            if (snNum === 1 && snWire === 2) {
+              const strRes = readVarint(buffer, sCur, sEnd);
+              if (!strRes) break;
+              const [strLen, strStart] = strRes;
+              sCur = strStart + strLen;
+              if (sCur > sEnd) break;
+              subName = textDecoder.decode(buffer.subarray(strStart, strStart + strLen));
+            } else if (snNum === 3 && snWire === 0) {
+              const svRes = readVarint(buffer, sCur, sEnd);
+              if (!svRes) break;
+              subTok = svRes[0];
+              sCur = svRes[1];
+            } else {
+              const nxt = skipField(buffer, snWire, sCur, sEnd);
+              if (nxt === null) break;
+              sCur = nxt;
+            }
+          }
+          if (subName) {
+            subItems[subName] = subTok;
+          }
+        } else {
+          const nxt = skipField(buffer, eWire, eCur, eEnd);
+          if (nxt === null) break;
+          eCur = nxt;
+        }
+      }
+      if (catName) {
+        categories[catName] = { tokens: catTok, subItems };
+      }
+    } else {
+      const nxt = skipField(buffer, wireType, cur, end);
+      if (nxt === null) break;
+      cur = nxt;
+    }
+  }
+  if (Object.keys(categories).length === 0) return null;
+  const sysCat = categories["System Prompt"];
+  const skillsTok = sysCat?.subItems?.["skills"] ?? 0;
+  const sysCatTokens = sysCat?.tokens ?? 0;
+  const sysPromptTok = Math.max(0, sysCatTokens - skillsTok);
+  const toolsTok = categories["Tools"]?.tokens ?? 0;
+  const chatTok = categories["Chat Messages"]?.tokens ?? 0;
+  let totalActive = sysPromptTok + toolsTok + skillsTok + chatTok;
+  if (totalActive === 0) {
+    for (const cat of Object.values(categories)) {
+      totalActive += cat.tokens;
+    }
+  }
+  return totalActive > 0 ? totalActive : null;
+}
+
+// src/subagentTracker.ts
+try {
+  const origEmitWarning = process.emitWarning;
+  if (typeof origEmitWarning === "function") {
+    process.emitWarning = function(warning, ...args) {
+      const msg = typeof warning === "string" ? warning : warning?.message || "";
+      if (/sqlite/i.test(msg)) {
+        return;
+      }
+      return origEmitWarning.call(process, warning, ...args);
+    };
+  }
+} catch {
+}
+var DatabaseSyncClass = null;
+try {
+  const sqlite = require("node:sqlite");
+  DatabaseSyncClass = sqlite?.DatabaseSync ?? null;
+} catch {
+  DatabaseSyncClass = null;
+}
+function sanitizeSubId(subId) {
+  if (!subId || typeof subId !== "string") return "";
+  return subId.trim().replace(/[^a-zA-Z0-9_-]/g, "");
+}
+function getSubagentStats(conversationId, payload, options = {}) {
+  const rootInputTokens = payload.context_window?.total_input_tokens ?? 0;
+  const rootOutputTokens = payload.context_window?.total_output_tokens ?? 0;
+  const DbClass = options.databaseSync !== void 0 ? options.databaseSync : DatabaseSyncClass;
+  if (!DbClass || !conversationId) {
+    const rootAgent2 = {
+      index: 0,
+      id: conversationId || "",
+      role: "root",
+      status: payload.agent_state || "idle",
+      isRunning: false,
+      activeTokens: rootInputTokens,
+      cumulativeTokens: rootInputTokens + rootOutputTokens
+    };
+    return { hasActiveSubagents: false, agents: [rootAgent2] };
+  }
+  let geminiHome = options.geminiHome || process.env.ANTIGRAVITY_CLI_HOME;
+  if (!geminiHome) {
+    const envHome = process.env.GEMINI_HOME || process.env.GEMINI_DIR;
+    if (envHome) {
+      const sub = import_node_path4.default.join(envHome, "antigravity-cli");
+      if (import_node_fs5.default.existsSync(import_node_path4.default.join(sub, "conversation_summaries.db"))) {
+        geminiHome = sub;
+      } else if (import_node_fs5.default.existsSync(import_node_path4.default.join(envHome, "conversation_summaries.db"))) {
+        geminiHome = envHome;
+      }
+    }
+  }
+  if (!geminiHome) {
+    geminiHome = import_node_path4.default.join(import_node_os.default.homedir(), ".gemini", "antigravity-cli");
+  }
+  let cache = {
+    version: 3,
+    updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
+    rootLastIdx: -1,
+    rootCumulative: 0,
+    rootActiveTokens: 0,
+    agents: {}
+  };
+  let cacheModified = false;
+  const cachePath = options.cachePath;
+  if (cachePath) {
+    try {
+      if (import_node_fs5.default.existsSync(cachePath)) {
+        const raw = JSON.parse(import_node_fs5.default.readFileSync(cachePath, "utf8"));
+        if (raw && raw.version === 3 && typeof raw.agents === "object" && raw.agents !== null) {
+          cache = raw;
+          if (!cache.agents) {
+            cache.agents = {};
+          }
+        } else {
+          cacheModified = true;
+        }
+      }
+    } catch {
+      cache = {
+        version: 3,
+        updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
+        rootLastIdx: -1,
+        rootCumulative: 0,
+        rootActiveTokens: 0,
+        agents: {}
+      };
+      cacheModified = true;
+    }
+  }
+  const flushCache = () => {
+    if (cacheModified && cachePath) {
+      try {
+        import_node_fs5.default.mkdirSync(import_node_path4.default.dirname(cachePath), { recursive: true });
+        cache.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
+        import_node_fs5.default.writeFileSync(cachePath, JSON.stringify(cache, null, 2), "utf8");
+      } catch {
+      }
+    }
+  };
+  let rootActiveTokens = cache.rootActiveTokens && cache.rootActiveTokens > 0 ? cache.rootActiveTokens : rootInputTokens;
+  let rootCumulativeTokens = cache.rootCumulative ?? 0;
+  let rootLastIdx = cache.rootLastIdx ?? -1;
+  const convsDir = import_node_path4.default.resolve(geminiHome, "conversations");
+  const sanitizedRootId = sanitizeSubId(conversationId);
+  const rootDbPath = import_node_path4.default.resolve(convsDir, `${sanitizedRootId}.db`);
+  if (rootDbPath.startsWith(convsDir) && import_node_fs5.default.existsSync(rootDbPath)) {
+    let rootRows = [];
+    try {
+      const rootDb = new DbClass(rootDbPath, { readOnly: true });
+      try {
+        rootDb.exec("PRAGMA busy_timeout = 200;");
+        const stmt = rootDb.prepare("SELECT idx, data FROM gen_metadata WHERE idx > ? ORDER BY idx ASC");
+        rootRows = stmt.all(rootLastIdx);
+      } finally {
+        rootDb.close();
+      }
+    } catch {
+    }
+    if (rootRows.length > 0) {
+      let latestRootPrompt = 0;
+      for (const rRow of rootRows) {
+        if (rRow.data) {
+          const usage2 = decodeUsageMetadata(rRow.data);
+          if (usage2) {
+            latestRootPrompt = usage2.promptTokens;
+            rootCumulativeTokens += usage2.promptTokens + usage2.candidatesTokens;
+            rootLastIdx = rRow.idx;
+            cacheModified = true;
+          }
+        }
+      }
+      let treeTokens = null;
+      for (let j = rootRows.length - 1; j >= 0; j--) {
+        if (rootRows[j].data) {
+          treeTokens = extractContextTree(rootRows[j].data);
+          if (treeTokens !== null && treeTokens > 0) {
+            break;
+          }
+        }
+      }
+      if (treeTokens !== null && treeTokens > 0) {
+        rootActiveTokens = treeTokens;
+      } else if (latestRootPrompt > 0) {
+        rootActiveTokens = latestRootPrompt;
+      } else if (rootActiveTokens === 0 && rootInputTokens > 0) {
+        rootActiveTokens = rootInputTokens;
+      }
+      cache.rootLastIdx = rootLastIdx;
+      cache.rootCumulative = rootCumulativeTokens;
+      cache.rootActiveTokens = rootActiveTokens;
+    }
+  }
+  if (rootCumulativeTokens === 0) {
+    rootCumulativeTokens = rootInputTokens + rootOutputTokens;
+  }
+  const rootAgent = {
+    index: 0,
+    id: conversationId || "",
+    role: "root",
+    status: payload.agent_state || "idle",
+    isRunning: false,
+    activeTokens: rootActiveTokens,
+    cumulativeTokens: rootCumulativeTokens
+  };
+  const summariesDbPath = import_node_path4.default.join(geminiHome, "conversation_summaries.db");
+  const summariesWalPath = summariesDbPath + "-wal";
+  let dbStat = null;
+  try {
+    dbStat = import_node_fs5.default.statSync(summariesDbPath);
+  } catch {
+  }
+  if (!dbStat) {
+    flushCache();
+    return { hasActiveSubagents: false, agents: [rootAgent] };
+  }
+  let walStat = null;
+  try {
+    walStat = import_node_fs5.default.statSync(summariesWalPath);
+  } catch {
+  }
+  const currentDbMtime = dbStat.mtimeMs;
+  const currentWalMtime = walStat ? walStat.mtimeMs : 0;
+  const currentWalSize = walStat ? walStat.size : 0;
+  const currentDbSize = dbStat.size;
+  const agentState = (payload.agent_state || "idle").trim().toLowerCase();
+  const isAgentActive = agentState !== "idle";
+  const hasActiveInCache = Object.values(cache.agents).some(
+    (a) => a.status === "running" || a.status === "CASCADE_RUN_STATUS_RUNNING" || a.notFullyIdle === 1 && a.killed === 0
+  );
+  if (!isAgentActive && !hasActiveInCache && cache.summariesMtime !== void 0 && cache.summariesWalMtime !== void 0 && cache.summariesWalSize !== void 0 && cache.summariesMtime === currentDbMtime && cache.summariesWalMtime === currentWalMtime && cache.summariesWalSize === currentWalSize && (cache.summariesDbSize === void 0 || cache.summariesDbSize === currentDbSize)) {
+    flushCache();
+    const cachedAgents = Object.values(cache.agents).sort((a, b) => (a.rowid ?? 0) - (b.rowid ?? 0));
+    const subagents2 = cachedAgents.map((a, idx) => ({
+      index: idx + 1,
+      id: a.id,
+      role: a.role,
+      status: a.status,
+      isRunning: false,
+      activeTokens: a.activeTokens,
+      cumulativeTokens: a.cumulativeTokens
+    }));
+    return {
+      hasActiveSubagents: false,
+      agents: [rootAgent, ...subagents2]
+    };
+  }
+  let rows = [];
+  try {
+    const db = new DbClass(summariesDbPath, { readOnly: true });
+    try {
+      db.exec("PRAGMA busy_timeout = 200;");
+      const stmt = db.prepare(
+        "SELECT rowid, conversation_id, agent_name, status, not_fully_idle, step_count, killed FROM conversation_summaries WHERE parent_conversation_id = ? ORDER BY rowid ASC"
+      );
+      rows = stmt.all(conversationId);
+    } finally {
+      db.close();
+    }
+  } catch {
+    flushCache();
+    return { hasActiveSubagents: false, agents: [rootAgent] };
+  }
+  if (cache.summariesMtime !== currentDbMtime || cache.summariesWalMtime !== currentWalMtime || cache.summariesWalSize !== currentWalSize || cache.summariesDbSize !== currentDbSize || cache.summariesRowCount !== rows.length) {
+    cache.summariesMtime = currentDbMtime;
+    cache.summariesWalMtime = currentWalMtime;
+    cache.summariesWalSize = currentWalSize;
+    cache.summariesDbSize = currentDbSize;
+    cache.summariesRowCount = rows.length;
+    cacheModified = true;
+  }
+  if (rows.length === 0) {
+    flushCache();
+    return { hasActiveSubagents: false, agents: [rootAgent] };
+  }
+  const subagents = [];
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    const subId = sanitizeSubId(row.conversation_id);
+    if (!subId) {
+      continue;
+    }
+    const role = row.agent_name && row.agent_name.trim() !== "" ? row.agent_name.trim() : "subagent";
+    const notFullyIdle = Number(row.not_fully_idle ?? 0);
+    const killed = Number(row.killed ?? 0);
+    const isRunning = (notFullyIdle === 1 || row.status === "CASCADE_RUN_STATUS_RUNNING" || row.status === "running") && killed === 0;
+    const status = isRunning ? "running" : "idle";
+    const cached = cache.agents[subId];
+    let activeTokens = 0;
+    let cumulativeTokens = 0;
+    let lastIdx = cached?.lastIdx ?? -1;
+    const wasRunning = cached && (cached.status === "running" || cached.status === "CASCADE_RUN_STATUS_RUNNING" || cached.notFullyIdle === 1 && cached.killed === 0);
+    if (!isRunning && cached && !wasRunning) {
+      activeTokens = cached.activeTokens;
+      cumulativeTokens = cached.cumulativeTokens;
+      if (cached.status !== status || cached.notFullyIdle !== notFullyIdle || cached.killed !== killed || cached.rowid !== row.rowid) {
+        cached.status = status;
+        cached.notFullyIdle = notFullyIdle;
+        cached.killed = killed;
+        cached.rowid = row.rowid;
+        cacheModified = true;
+      }
+      if (row.step_count !== null && row.step_count !== void 0 && cached.stepCount !== row.step_count) {
+        cached.stepCount = row.step_count;
+        cacheModified = true;
+      }
+    } else {
+      const subDbPath = import_node_path4.default.resolve(convsDir, `${subId}.db`);
+      let fetchedRows = [];
+      if (subDbPath.startsWith(convsDir) && import_node_fs5.default.existsSync(subDbPath)) {
+        try {
+          const subDb = new DbClass(subDbPath, { readOnly: true });
+          try {
+            subDb.exec("PRAGMA busy_timeout = 200;");
+            const stmt = subDb.prepare("SELECT idx, data FROM gen_metadata WHERE idx > ? ORDER BY idx ASC");
+            fetchedRows = stmt.all(lastIdx);
+          } finally {
+            subDb.close();
+          }
+        } catch {
+        }
+      }
+      if (cached) {
+        activeTokens = cached.activeTokens;
+        cumulativeTokens = cached.cumulativeTokens;
+      }
+      if (fetchedRows.length > 0) {
+        let latestPromptTokens = 0;
+        for (const fRow of fetchedRows) {
+          if (fRow.data) {
+            const usage2 = decodeUsageMetadata(fRow.data);
+            if (usage2) {
+              latestPromptTokens = usage2.promptTokens;
+              cumulativeTokens += usage2.promptTokens + usage2.candidatesTokens;
+              lastIdx = fRow.idx;
+            }
+          }
+        }
+        let treeTokens = null;
+        for (let j = fetchedRows.length - 1; j >= 0; j--) {
+          if (fetchedRows[j].data) {
+            treeTokens = extractContextTree(fetchedRows[j].data);
+            if (treeTokens !== null && treeTokens > 0) {
+              break;
+            }
+          }
+        }
+        if (treeTokens !== null && treeTokens > 0) {
+          activeTokens = treeTokens;
+        } else if (latestPromptTokens > 0) {
+          activeTokens = latestPromptTokens;
+        }
+      }
+      const prev = cache.agents[subId];
+      if (!prev || prev.rowid !== row.rowid || prev.status !== status || prev.notFullyIdle !== notFullyIdle || prev.killed !== killed || prev.lastIdx !== lastIdx || prev.activeTokens !== activeTokens || prev.cumulativeTokens !== cumulativeTokens || prev.stepCount !== row.step_count) {
+        cache.agents[subId] = {
+          rowid: row.rowid,
+          id: subId,
+          role,
+          status,
+          notFullyIdle,
+          killed,
+          lastIdx,
+          activeTokens,
+          cumulativeTokens,
+          stepCount: isRunning ? row.step_count : row.step_count ?? void 0
+        };
+        cacheModified = true;
+      }
+    }
+    subagents.push({
+      index: subagents.length + 1,
+      id: subId,
+      role,
+      status,
+      isRunning,
+      activeTokens,
+      cumulativeTokens
+    });
+  }
+  flushCache();
+  const hasActiveSubagents = subagents.some((a) => a.isRunning);
+  return {
+    hasActiveSubagents,
+    agents: [rootAgent, ...subagents]
+  };
+}
+
 // src/main.ts
 var version = "0.1.10";
 var consumedQuotaRefreshMs = 15 * 1e3;
 var untouchedQuotaRefreshMs = 30 * 1e3;
-function renderStatusline(input, cfg = defaultConfig(), cache = null) {
+function renderStatusline(input, cfg = defaultConfig(), cache = null, subagents = null) {
   if (input.trim() === "") {
     return "agy-hud";
   }
@@ -1692,7 +2414,8 @@ function renderStatusline(input, cfg = defaultConfig(), cache = null) {
     return render(payload, {
       config: cfg,
       quota: cache,
-      gitBranch: branch2
+      gitBranch: branch2,
+      subagents
     });
   } catch {
     return "agy-hud";
@@ -1704,27 +2427,27 @@ function configPaths() {
   if (explicit) {
     paths.push(explicit);
   }
-  const dir = import_node_path4.default.dirname(__filename);
-  paths.push(import_node_path4.default.join(dir, "config.json"));
-  paths.push(import_node_path4.default.join(dir, "..", "config.json"));
+  const dir = import_node_path5.default.dirname(__filename);
+  paths.push(import_node_path5.default.join(dir, "config.json"));
+  paths.push(import_node_path5.default.join(dir, "..", "config.json"));
   const xdg = process.env.XDG_CONFIG_HOME;
   if (xdg) {
-    paths.push(import_node_path4.default.join(xdg, "agy-hud", "config.json"));
+    paths.push(import_node_path5.default.join(xdg, "agy-hud", "config.json"));
   }
-  const home = import_node_os.default.homedir();
+  const home = import_node_os2.default.homedir();
   if (home) {
-    paths.push(import_node_path4.default.join(home, ".config", "agy-hud", "config.json"));
+    paths.push(import_node_path5.default.join(home, ".config", "agy-hud", "config.json"));
   }
   return paths;
 }
 function userConfigPath() {
   const xdg = process.env.XDG_CONFIG_HOME;
   if (xdg) {
-    return import_node_path4.default.join(xdg, "agy-hud", "config.json");
+    return import_node_path5.default.join(xdg, "agy-hud", "config.json");
   }
-  const home = import_node_os.default.homedir();
+  const home = import_node_os2.default.homedir();
   if (home) {
-    return import_node_path4.default.join(home, ".config", "agy-hud", "config.json");
+    return import_node_path5.default.join(home, ".config", "agy-hud", "config.json");
   }
   return "";
 }
@@ -1734,21 +2457,38 @@ function quotaCacheWritePath() {
     return explicit;
   }
   const xdg = process.env.XDG_CACHE_HOME;
-  if (xdg && import_node_path4.default.isAbsolute(xdg)) {
-    return import_node_path4.default.join(xdg, "agy-hud", "quota_cache.json");
+  if (xdg && import_node_path5.default.isAbsolute(xdg)) {
+    return import_node_path5.default.join(xdg, "agy-hud", "quota_cache.json");
   }
-  const home = import_node_os.default.homedir();
+  const home = import_node_os2.default.homedir();
   if (!home) {
     return "";
   }
-  return import_node_path4.default.join(home, ".cache", "agy-hud", "quota_cache.json");
+  return import_node_path5.default.join(home, ".cache", "agy-hud", "quota_cache.json");
+}
+function subagentCachePath(conversationId) {
+  const explicit = process.env.AGY_HUD_SUBAGENT_CACHE;
+  if (explicit) {
+    return explicit;
+  }
+  const safeId = (conversationId || "default").replace(/[^a-zA-Z0-9_-]/g, "_");
+  const filename = `subagent_cache_${safeId}.json`;
+  const xdg = process.env.XDG_CACHE_HOME;
+  if (xdg && import_node_path5.default.isAbsolute(xdg)) {
+    return import_node_path5.default.join(xdg, "agy-hud", filename);
+  }
+  const home = import_node_os2.default.homedir();
+  if (!home) {
+    return "";
+  }
+  return import_node_path5.default.join(home, ".cache", "agy-hud", filename);
 }
 function legacyQuotaCachePath() {
-  const home = import_node_os.default.homedir();
+  const home = import_node_os2.default.homedir();
   if (!home) {
     return "";
   }
-  return import_node_path4.default.join(home, ".gemini", "antigravity-cli", "scratch", "agy-hud", "quota_cache.json");
+  return import_node_path5.default.join(home, ".gemini", "antigravity-cli", "scratch", "agy-hud", "quota_cache.json");
 }
 function quotaCacheReadCandidates() {
   if (process.env.AGY_HUD_QUOTA_CACHE) {
@@ -1765,7 +2505,7 @@ function loadQuotaFromCandidates(candidates) {
     if (ok) {
       return [cache, true, primaryUnloadable];
     }
-    if (index === 0 && import_node_fs5.default.existsSync(candidate)) {
+    if (index === 0 && import_node_fs6.default.existsSync(candidate)) {
       primaryUnloadable = true;
     }
   }
@@ -1793,7 +2533,7 @@ function shouldUseProcessCWD(payloadCWD) {
   if (payloadCWD.trim() === "") {
     return true;
   }
-  return import_node_path4.default.basename(process.cwd()) === import_node_path4.default.basename(payloadCWD);
+  return import_node_path5.default.basename(process.cwd()) === import_node_path5.default.basename(payloadCWD);
 }
 function validGitCandidatePath(candidate) {
   const trimmed = candidate.trim();
@@ -1801,7 +2541,7 @@ function validGitCandidatePath(candidate) {
     return false;
   }
   try {
-    return import_node_fs5.default.statSync(trimmed).isDirectory();
+    return import_node_fs6.default.statSync(trimmed).isDirectory();
   } catch {
     return false;
   }
@@ -1841,19 +2581,19 @@ function doctorDepsFromEnv() {
     nodeVersion: process.version,
     platform: process.platform,
     env: process.env,
-    homedir: import_node_os.default.homedir(),
+    homedir: import_node_os2.default.homedir(),
     configPaths: configPaths(),
     userConfigPath: userConfigPath(),
     readFile: (filePath) => {
       try {
-        return import_node_fs5.default.readFileSync(filePath, "utf8");
+        return import_node_fs6.default.readFileSync(filePath, "utf8");
       } catch {
         return null;
       }
     },
     listDir: (dirPath) => {
       try {
-        return import_node_fs5.default.readdirSync(dirPath);
+        return import_node_fs6.default.readdirSync(dirPath);
       } catch {
         return [];
       }
@@ -1887,7 +2627,17 @@ async function runCli(args, deps = {}) {
       deps.refreshQuota ?? refreshQuota
     );
     triggerBackgroundRefreshIfNeeded(cachePath, displayCache, payload, primaryUnloadable && !refreshed);
-    stdout(`${renderStatusline(raw, cfg, displayCache)}
+    let subagents = null;
+    const conversationId = (payload?.conversation_id || payload?.session_id || "").trim();
+    if (cfg.showSubagents && conversationId && payload) {
+      try {
+        const subCache = subagentCachePath(conversationId);
+        subagents = getSubagentStats(conversationId, payload, { cachePath: subCache });
+      } catch {
+        subagents = null;
+      }
+    }
+    stdout(`${renderStatusline(raw, cfg, displayCache, subagents)}
 `);
     return 0;
   }
@@ -1909,8 +2659,8 @@ async function runCli(args, deps = {}) {
         return 2;
       } finally {
         try {
-          if (import_node_fs5.default.existsSync(lockPath)) {
-            import_node_fs5.default.unlinkSync(lockPath);
+          if (import_node_fs6.default.existsSync(lockPath)) {
+            import_node_fs6.default.unlinkSync(lockPath);
           }
         } catch {
         }
@@ -2002,14 +2752,14 @@ function triggerBackgroundRefreshIfNeeded(cachePath, cache, payload = null, repa
   }
   const lockPath = cachePath + ".lock";
   try {
-    if (import_node_fs5.default.existsSync(lockPath)) {
-      const stat = import_node_fs5.default.statSync(lockPath);
+    if (import_node_fs6.default.existsSync(lockPath)) {
+      const stat = import_node_fs6.default.statSync(lockPath);
       const minLockMs = activityRefresh ? 5 * 1e3 : 30 * 1e3;
       if (now.getTime() - stat.mtimeMs < minLockMs) {
         return;
       }
     }
-    import_node_fs5.default.writeFileSync(lockPath, (/* @__PURE__ */ new Date()).toISOString(), "utf8");
+    import_node_fs6.default.writeFileSync(lockPath, (/* @__PURE__ */ new Date()).toISOString(), "utf8");
     const nodePath = process.argv[0];
     const child = (0, import_node_child_process2.spawn)(nodePath, [__filename, "quota", "refresh"], {
       detached: true,
@@ -2057,7 +2807,7 @@ function loadRefreshStateWithFallback(candidates) {
     if (statePath === "") {
       continue;
     }
-    if (import_node_fs5.default.existsSync(statePath)) {
+    if (import_node_fs6.default.existsSync(statePath)) {
       return loadStatuslineRefreshState(statePath);
     }
   }
@@ -2068,7 +2818,7 @@ function loadStatuslineRefreshState(statePath) {
     return null;
   }
   try {
-    const raw = import_node_fs5.default.readFileSync(statePath, "utf8");
+    const raw = import_node_fs6.default.readFileSync(statePath, "utf8");
     const parsed = JSON.parse(raw);
     return {
       conversationId: typeof parsed.conversationId === "string" ? parsed.conversationId : "",
@@ -2084,8 +2834,8 @@ function saveStatuslineRefreshState(statePath, state2) {
     return;
   }
   try {
-    import_node_fs5.default.mkdirSync(import_node_path4.default.dirname(statePath), { recursive: true, mode: 448 });
-    import_node_fs5.default.writeFileSync(statePath, `${JSON.stringify(state2, null, 2)}
+    import_node_fs6.default.mkdirSync(import_node_path5.default.dirname(statePath), { recursive: true, mode: 448 });
+    import_node_fs6.default.writeFileSync(statePath, `${JSON.stringify(state2, null, 2)}
 `, { encoding: "utf8", mode: 384 });
   } catch {
   }
@@ -2097,7 +2847,7 @@ function mergeStatuslineRefreshState(prevState, payload, activityRefresh, now) {
     lastActivityAt: prevState?.lastActivityAt
   };
   if (payload) {
-    next.conversationId = (payload.conversation_id ?? "").trim();
+    next.conversationId = (payload.conversation_id || payload.session_id || "").trim();
     next.agentState = normalizeAgentState(payload.agent_state);
   }
   if (activityRefresh) {
@@ -2109,7 +2859,7 @@ function shouldTriggerActivityRefresh(cache, payload, prevState, now) {
   if (!payload) {
     return false;
   }
-  const conversationId = (payload.conversation_id ?? "").trim();
+  const conversationId = (payload.conversation_id || payload.session_id || "").trim();
   const agentState = normalizeAgentState(payload.agent_state);
   const prevConversationId = prevState?.conversationId ?? "";
   const prevAgentState = prevState?.agentState ?? "";
@@ -2179,6 +2929,7 @@ if (require.main === module) {
   quotaCacheWritePath,
   renderStatusline,
   runCli,
+  subagentCachePath,
   userConfigPath,
   version
 });

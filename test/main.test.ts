@@ -696,6 +696,61 @@ test("dist bundle CLI smoke test", () => {
   assert.equal(execFileSync(process.execPath, [entry, "statusline"], { input: "", encoding: "utf8", env }), "agy-hud\n");
 });
 
+test("statusline CLI renders subagent badges when active subagent exists in conversation", () => {
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "agy-cli-sub-"));
+  try {
+    const dbPath = path.join(tmpRoot, "conversation_summaries.db");
+    const { DatabaseSync } = require("node:sqlite");
+    const db = new DatabaseSync(dbPath);
+    db.exec(`
+      CREATE TABLE conversation_summaries (
+        rowid INTEGER PRIMARY KEY,
+        conversation_id TEXT,
+        agent_name TEXT,
+        status TEXT,
+        not_fully_idle NUMERIC,
+        step_count INTEGER,
+        killed NUMERIC,
+        parent_conversation_id TEXT
+      );
+    `);
+    const parentId = "parent-cli-test";
+    const subId = "sub-active-cli";
+    db.prepare(`
+      INSERT INTO conversation_summaries (rowid, conversation_id, agent_name, status, not_fully_idle, step_count, killed, parent_conversation_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(1, subId, "dev", "CASCADE_RUN_STATUS_RUNNING", 1, 10, 0, parentId);
+    db.close();
+
+    const entry = path.join(__dirname, "..", "..", "dist", "agy-hud.js");
+    const env = {
+      ...sandboxedEnv(),
+      ANTIGRAVITY_CLI_HOME: tmpRoot,
+      AGY_HUD_SUBAGENT_CACHE: path.join(tmpRoot, "sub_cache.json"),
+    };
+    const payload = JSON.stringify({
+      conversation_id: parentId,
+      agent_state: "idle",
+      context_window: { total_input_tokens: 10000, total_output_tokens: 500 }
+    });
+    const out = execFileSync(process.execPath, [entry, "statusline"], { input: payload, encoding: "utf8", env });
+    assert.match(strip(out), /\[1:dev/);
+    assert.match(strip(out), /●/);
+
+    // Also verify session_id fallback
+    const payloadSession = JSON.stringify({
+      session_id: parentId,
+      agent_state: "idle",
+      context_window: { total_input_tokens: 10000, total_output_tokens: 500 }
+    });
+    const outSession = execFileSync(process.execPath, [entry, "statusline"], { input: payloadSession, encoding: "utf8", env });
+    assert.match(strip(outSession), /\[1:dev/);
+    assert.match(strip(outSession), /●/);
+  } finally {
+    fs.rmSync(tmpRoot, { recursive: true, force: true });
+  }
+});
+
 test("CLI quota refresh does not fall through to usage", async () => {
   let stdout = "";
   let stderr = "";

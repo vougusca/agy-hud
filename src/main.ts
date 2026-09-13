@@ -8,6 +8,7 @@ import { RefreshResult, refreshQuota } from "./quotaProbe";
 import { branch as gitBranch } from "./gitinfo";
 import { Payload, render } from "./statusline";
 import { DoctorDeps, collectDoctorReport, formatDoctorReport } from "./doctor";
+import { getSubagentStats, SubagentTrackerResult } from "./subagentTracker";
 
 export const version = "0.1.10";
 
@@ -20,7 +21,12 @@ interface StatuslineRefreshState {
   lastActivityAt?: string;
 }
 
-export function renderStatusline(input: string, cfg: Config = defaultConfig(), cache: Cache | null = null): string {
+export function renderStatusline(
+  input: string,
+  cfg: Config = defaultConfig(),
+  cache: Cache | null = null,
+  subagents: SubagentTrackerResult | null = null
+): string {
   if (input.trim() === "") {
     return "agy-hud";
   }
@@ -47,7 +53,8 @@ export function renderStatusline(input: string, cfg: Config = defaultConfig(), c
     return render(payload, {
       config: cfg,
       quota: cache,
-      gitBranch: branch
+      gitBranch: branch,
+      subagents
     });
   } catch {
     return "agy-hud";
@@ -106,6 +113,24 @@ export function quotaCacheWritePath(): string {
     return "";
   }
   return path.join(home, ".cache", "agy-hud", "quota_cache.json");
+}
+
+export function subagentCachePath(conversationId: string): string {
+  const explicit = process.env.AGY_HUD_SUBAGENT_CACHE;
+  if (explicit) {
+    return explicit;
+  }
+  const safeId = (conversationId || "default").replace(/[^a-zA-Z0-9_-]/g, "_");
+  const filename = `subagent_cache_${safeId}.json`;
+  const xdg = process.env.XDG_CACHE_HOME;
+  if (xdg && path.isAbsolute(xdg)) {
+    return path.join(xdg, "agy-hud", filename);
+  }
+  const home = os.homedir();
+  if (!home) {
+    return "";
+  }
+  return path.join(home, ".cache", "agy-hud", filename);
 }
 
 function legacyQuotaCachePath(): string {
@@ -288,7 +313,19 @@ export async function runCli(args: string[], deps: CliDeps = {}): Promise<number
     // A same-frame refresh already rewrote the write path, so a corrupt primary is repaired by now.
     // Passing the stale flag on would spawn a second probe for damage that no longer exists.
     triggerBackgroundRefreshIfNeeded(cachePath, displayCache, payload, primaryUnloadable && !refreshed);
-    stdout(`${renderStatusline(raw, cfg, displayCache)}\n`);
+
+    let subagents: SubagentTrackerResult | null = null;
+    const conversationId = (payload?.conversation_id || payload?.session_id || "").trim();
+    if (cfg.showSubagents && conversationId && payload) {
+      try {
+        const subCache = subagentCachePath(conversationId);
+        subagents = getSubagentStats(conversationId, payload, { cachePath: subCache });
+      } catch {
+        subagents = null;
+      }
+    }
+
+    stdout(`${renderStatusline(raw, cfg, displayCache, subagents)}\n`);
     return 0;
   }
 
@@ -537,7 +574,7 @@ function mergeStatuslineRefreshState(
     lastActivityAt: prevState?.lastActivityAt
   };
   if (payload) {
-    next.conversationId = (payload.conversation_id ?? "").trim();
+    next.conversationId = (payload.conversation_id || payload.session_id || "").trim();
     next.agentState = normalizeAgentState(payload.agent_state);
   }
   if (activityRefresh) {
@@ -556,7 +593,7 @@ function shouldTriggerActivityRefresh(
     return false;
   }
 
-  const conversationId = (payload.conversation_id ?? "").trim();
+  const conversationId = (payload.conversation_id || payload.session_id || "").trim();
   const agentState = normalizeAgentState(payload.agent_state);
   const prevConversationId = prevState?.conversationId ?? "";
   const prevAgentState = prevState?.agentState ?? "";

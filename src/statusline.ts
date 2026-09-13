@@ -1,6 +1,7 @@
 import { Config } from "./config";
 import { truncateColumns, visibleLen } from "./ansi";
 import { Cache, matchModel, usagePercent as quotaUsagePercent } from "./quota";
+import { AgentTokenStats, SubagentTrackerResult } from "./subagentTracker";
 import path from "node:path";
 
 const colorReset = "\x1b[0m";
@@ -155,6 +156,7 @@ export interface RenderOptions {
   quota?: Cache | null;
   gitBranch?: string;
   now?: Date;
+  subagents?: SubagentTrackerResult | null;
 }
 
 export function shortModelName(display: string): string {
@@ -200,12 +202,122 @@ export function render(payload: Payload, opts: RenderOptions): string {
   const stateLabel = state(payload.agent_state ?? "");
   const quota = quotaInfo(opts.quota, modelDisplay, payload.quota, opts.now ?? new Date());
   if (config.multiline) {
-    return renderMultiline(payload, config, width, modelSegment, ctxPct, quota, opts.gitBranch ?? "", stateLabel);
+    return renderMultiline(payload, config, width, modelSegment, ctxPct, quota, opts.gitBranch ?? "", stateLabel, opts.subagents);
   }
-  return renderSingleLine(payload, config, width, modelSegment, ctxPct, quota, stateLabel);
+  return renderSingleLine(payload, config, width, modelSegment, ctxPct, quota, stateLabel, opts.subagents);
 }
 
-function renderMultiline(payload: Payload, config: Config, width: number, modelSegment: string, ctxPct: number, quota: QuotaDisplay, branch: string, stateLabel: string): string {
+export function shortenRole(role?: string | null): string {
+  if (!role || typeof role !== "string") return "";
+  const r = role.trim().toLowerCase();
+  if (r === "code-reviewer" || r === "reviewer") return "rev";
+  if (r === "debugger") return "dbg";
+  if (r === "dev") return "dev";
+  if (r === "devops") return "ops";
+  if (r === "explorer") return "exp";
+  if (r === "orchestrator") return "orch";
+  if (r === "planner") return "plan";
+  if (r === "test-engineer" || r === "tester") return "test";
+  if (r === "web-researcher" || r === "researcher") return "web";
+  if (r === "writer") return "doc";
+  if (r === "subagent") return "sub";
+  return r.length > 4 ? r.slice(0, 4) : r;
+}
+
+export function formatRootBadge(root: AgentTokenStats, colors: boolean): string {
+  const active = formatTokens(root.activeTokens);
+  const cum = formatTokens(root.cumulativeTokens);
+  const text = `[◆ ${active}/${cum}]`;
+  return colorize(text, colorCyan, colors);
+}
+
+export function formatSubagentBadge(agent: AgentTokenStats, includeRole: boolean, colors: boolean): string {
+  const role = shortenRole(agent.role) || "sub";
+  const rolePrefix = includeRole ? `${agent.index}:${role} ` : `${agent.index}:`;
+  const active = formatTokens(agent.activeTokens);
+  const cum = formatTokens(agent.cumulativeTokens);
+  const dotGlyph = agent.isRunning ? "●" : "○";
+  const dotColor = agent.isRunning ? colorGreen : colorMuted;
+  const dot = colorize(dotGlyph, dotColor, colors);
+  return `[${rolePrefix}${active}/${cum} ${dot}]`;
+}
+
+export function renderSubagentLine(stats: AgentTokenStats[], width: number, colors: boolean): string {
+  const root = stats.find(s => s.index === 0) ?? {
+    index: 0,
+    id: "",
+    role: "root",
+    status: "idle",
+    isRunning: false,
+    activeTokens: 0,
+    cumulativeTokens: 0,
+  };
+  const subagents = stats.filter(s => s.index > 0);
+  const rootBadge = formatRootBadge(root, colors);
+
+  if (subagents.length === 0) {
+    return fit(rootBadge, width);
+  }
+
+  // Tier 1 (Full): [◆ 2.2k/45k] [1:dev 15k/40k ●] [2:rev 8k/22k ●]
+  const tier1Badges = [rootBadge, ...subagents.map(s => formatSubagentBadge(s, true, colors))];
+  const tier1 = tier1Badges.join(" ");
+  if (visibleLen(tier1) <= width) {
+    return tier1;
+  }
+
+  // Tier 2 (Compact Roles): [◆ 2.2k/45k] [1:15k/40k ●] [2:8k/22k ●]
+  const tier2Badges = [rootBadge, ...subagents.map(s => formatSubagentBadge(s, false, colors))];
+  const tier2 = tier2Badges.join(" ");
+  if (visibleLen(tier2) <= width) {
+    return tier2;
+  }
+
+  // Tier 3 (Active Priority): [◆ 2.2k/45k] + active badges [1:dev 15k/40k ●] + [+N idle]
+  const activeSubagents = subagents.filter(s => s.isRunning);
+  const idleCount = subagents.length - activeSubagents.length;
+  const idleBadge = idleCount > 0 ? colorize(`[+${idleCount} idle]`, colorMuted, colors) : "";
+
+  if (activeSubagents.length > 0) {
+    const tier3Parts = [rootBadge, ...activeSubagents.map(s => formatSubagentBadge(s, true, colors))];
+    if (idleBadge) tier3Parts.push(idleBadge);
+    const tier3 = tier3Parts.join(" ");
+    if (visibleLen(tier3) <= width) {
+      return tier3;
+    }
+
+    const tier3CompactParts = [rootBadge, ...activeSubagents.map(s => formatSubagentBadge(s, false, colors))];
+    if (idleBadge) tier3CompactParts.push(idleBadge);
+    const tier3Compact = tier3CompactParts.join(" ");
+    if (visibleLen(tier3Compact) <= width) {
+      return tier3Compact;
+    }
+  }
+
+  // Tier 4 (Ultra-narrow): [◆ 2.2k/45k] [N active]
+  const activeCount = activeSubagents.length;
+  const activeBadge = activeCount > 0 ? colorize(`[${activeCount} active]`, colorGreen, colors) : "";
+  const tier4Parts = [rootBadge];
+  if (activeBadge) tier4Parts.push(activeBadge);
+  const tier4 = tier4Parts.join(" ");
+  if (visibleLen(tier4) <= width) {
+    return tier4;
+  }
+
+  return fit(tier4, width);
+}
+
+function renderMultiline(
+  payload: Payload,
+  config: Config,
+  width: number,
+  modelSegment: string,
+  ctxPct: number,
+  quota: QuotaDisplay,
+  branch: string,
+  stateLabel: string,
+  subagents?: SubagentTrackerResult | null
+): string {
   const line1Parts = [modelSegment];
   if (config.showCWD && payload.cwd) {
     line1Parts.push(colorize(withIcon(config, " ", "") + path.basename(payload.cwd), colorYellow, config.color));
@@ -232,6 +344,22 @@ function renderMultiline(payload: Payload, config: Config, width: number, modelS
   }
   line1 = fit(line1, width);
 
+  let line2: string;
+  if (config.showSubagents !== false && subagents && subagents.hasActiveSubagents) {
+    line2 = renderSubagentLine(subagents.agents, width, config.color);
+  } else {
+    line2 = renderResourceLine(payload, config, width, ctxPct, quota);
+  }
+  return `${line1}\n${line2}`;
+}
+
+function renderResourceLine(
+  payload: Payload,
+  config: Config,
+  width: number,
+  ctxPct: number,
+  quota: QuotaDisplay
+): string {
   let ctx = "Ctx ";
   if (config.showProgressBar) {
     ctx += `${progressBar(ctxPct, 10, config.color)} `;
@@ -276,11 +404,31 @@ function renderMultiline(payload: Payload, config: Config, width: number, modelS
   if (visibleLen(line2) > width) {
     line2 = coloredPct(ctxPct, ctxPct, config);
   }
-  line2 = fit(line2, width);
-  return `${line1}\n${line2}`;
+  return fit(line2, width);
 }
 
-function renderSingleLine(payload: Payload, config: Config, width: number, modelSegment: string, ctxPct: number, quota: QuotaDisplay, stateLabel: string): string {
+function renderSingleLine(
+  payload: Payload,
+  config: Config,
+  width: number,
+  modelSegment: string,
+  ctxPct: number,
+  quota: QuotaDisplay,
+  stateLabel: string,
+  subagents?: SubagentTrackerResult | null
+): string {
+  let subagentBadge = "";
+  if (config.showSubagents !== false && subagents?.hasActiveSubagents) {
+    const active = subagents.agents.filter(a => a.index > 0 && a.isRunning);
+    if (active.length === 1) {
+      const dot = colorize("●", colorGreen, config.color);
+      subagentBadge = `[${active[0].index}:${shortenRole(active[0].role) || "sub"} ${dot}]`;
+    } else if (active.length > 1) {
+      const dot = colorize("●", colorGreen, config.color);
+      subagentBadge = `[${active.length} active ${dot}]`;
+    }
+  }
+
   const coloredBadge = modelSegment;
   const ctx = `Ctx ${contextValue(config, payload.context_window, ctxPct)}`;
   let tokens = tokenDetail(payload.context_window);
@@ -304,10 +452,11 @@ function renderSingleLine(payload: Payload, config: Config, width: number, model
     bar = progressBar(ctxPct, 10, config.color);
   }
   const levels = [
-    [coloredBadge, ctx, tokens, bar, usage, stateText, costText],
-    [coloredBadge, ctx, tokens, bar, usage, stateText],
-    [coloredBadge, ctx, bar, usage, stateText],
-    [coloredBadge, ctx, usage, stateText],
+    [coloredBadge, subagentBadge, ctx, tokens, bar, usage, stateText, costText],
+    [coloredBadge, subagentBadge, ctx, tokens, bar, usage, stateText],
+    [coloredBadge, subagentBadge, ctx, bar, usage, stateText],
+    [coloredBadge, subagentBadge, ctx, usage, stateText],
+    [coloredBadge, subagentBadge, ctx, stateText],
     [coloredBadge, ctx, stateText],
     [ctx, stateText],
     [coloredPct(ctxPct, ctxPct, config), stateLabel]
@@ -595,7 +744,7 @@ function tokenDetail(ctx: Payload["context_window"]): string {
   return `(${formatTokens(total)}/${formatTokens(windowSize)})`;
 }
 
-function formatTokens(n: number): string {
+export function formatTokens(n: number): string {
   if (n >= 1_000_000) {
     if (n % 1_000_000 === 0) {
       return `${formatInt(n / 1_000_000)}M`;
@@ -603,7 +752,11 @@ function formatTokens(n: number): string {
     return `${Number((n / 1_000_000).toFixed(1))}M`;
   }
   if (n >= 1000) {
-    return `${formatInt((n + 500) / 1000)}k`;
+    if (n >= 10_000) {
+      return `${formatInt((n + 500) / 1000)}k`;
+    }
+    const val = Number((n / 1000).toFixed(1));
+    return `${val}k`;
   }
   return formatInt(n);
 }

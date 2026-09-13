@@ -10,6 +10,7 @@ export interface Config {
   showAgentState: boolean;
   showCost: boolean;
   showIcons: boolean;
+  showSubagents: boolean;
   contextValue: string;
   usageValue: string;
   debug: boolean;
@@ -28,6 +29,7 @@ export function defaultConfig(): Config {
     showAgentState: true,
     showCost: true,
     showIcons: true,
+    showSubagents: true,
     contextValue: "percent",
     usageValue: "remaining",
     debug: false,
@@ -67,6 +69,8 @@ function merge(base: Config, patch: Record<string, unknown>): Config {
   if (typeof patch.show_agent_state === "boolean") base.showAgentState = patch.show_agent_state;
   if (typeof patch.show_cost === "boolean") base.showCost = patch.show_cost;
   if (typeof patch.show_icons === "boolean") base.showIcons = patch.show_icons;
+  if (typeof patch.show_subagents === "boolean") base.showSubagents = patch.show_subagents;
+  if (typeof patch.showSubagents === "boolean") base.showSubagents = patch.showSubagents;
   if (typeof patch.context_value === "string" && patch.context_value !== "") base.contextValue = patch.context_value;
   if (typeof patch.usage_value === "string" && patch.usage_value !== "") base.usageValue = patch.usage_value;
   if (typeof patch.debug === "boolean") base.debug = patch.debug;

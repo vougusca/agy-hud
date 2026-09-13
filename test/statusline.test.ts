@@ -5,7 +5,8 @@ import path from "node:path";
 import { strip, visibleLen } from "../src/ansi";
 import { defaultConfig, Config } from "../src/config";
 import { Cache } from "../src/quota";
-import { Payload, render, shortModelName, formatCost } from "../src/statusline";
+import { Payload, render, shortModelName, formatCost, formatTokens, renderSubagentLine, shortenRole } from "../src/statusline";
+import { AgentTokenStats, SubagentTrackerResult } from "../src/subagentTracker";
 
 function fixturePayload(): Payload {
   return JSON.parse(fs.readFileSync(path.join(__dirname, "..", "..", "testdata", "statusline_payload.json"), "utf8"));
@@ -609,3 +610,176 @@ test("cost and wide workspace labels obey both layout width limits", () => {
     }
   }
 });
+
+test("formatTokens accurately handles sub-10k decimals and whole suffixes", () => {
+  assert.equal(formatTokens(2200), "2.2k");
+  assert.equal(formatTokens(2000), "2k");
+  assert.equal(formatTokens(8000), "8k");
+  assert.equal(formatTokens(8200), "8.2k");
+  assert.equal(formatTokens(15000), "15k");
+  assert.equal(formatTokens(45000), "45k");
+  assert.equal(formatTokens(125000), "125k");
+  assert.equal(formatTokens(1000000), "1M");
+  assert.equal(formatTokens(1500000), "1.5M");
+  assert.equal(formatTokens(500), "500");
+  assert.equal(formatTokens(0), "0");
+});
+
+test("shortenRole maps common agent roles to concise tokens", () => {
+  assert.equal(shortenRole("code-reviewer"), "rev");
+  assert.equal(shortenRole("reviewer"), "rev");
+  assert.equal(shortenRole("debugger"), "dbg");
+  assert.equal(shortenRole("dev"), "dev");
+  assert.equal(shortenRole("devops"), "ops");
+  assert.equal(shortenRole("explorer"), "exp");
+  assert.equal(shortenRole("orchestrator"), "orch");
+  assert.equal(shortenRole("planner"), "plan");
+  assert.equal(shortenRole("test-engineer"), "test");
+  assert.equal(shortenRole("tester"), "test");
+  assert.equal(shortenRole("web-researcher"), "web");
+  assert.equal(shortenRole("researcher"), "web");
+  assert.equal(shortenRole("writer"), "doc");
+  assert.equal(shortenRole("subagent"), "sub");
+  // Default fallback tests: <= 4 chars preserved, > 4 chars sliced to 4
+  assert.equal(shortenRole("qa"), "qa");
+  assert.equal(shortenRole("analyst"), "anal");
+  assert.equal(shortenRole("custom-agent"), "cust");
+});
+
+test("shortenRole handles nullish, empty, and malformed role inputs safely", () => {
+  assert.equal(shortenRole(null), "");
+  assert.equal(shortenRole(undefined), "");
+  assert.equal(shortenRole(""), "");
+  assert.equal(shortenRole("   "), "");
+  assert.equal(shortenRole(123 as any), "");
+  assert.equal(shortenRole("  reviewer  "), "rev");
+  assert.equal(shortenRole("  DEV  "), "dev");
+  assert.equal(shortenRole("  WRITER  "), "doc");
+});
+
+test("renderSubagentLine renders root badge and subagent badges with correct glyphs", () => {
+  const stats: AgentTokenStats[] = [
+    { index: 0, id: "root", role: "root", status: "thinking", isRunning: false, activeTokens: 2200, cumulativeTokens: 45000 },
+    { index: 1, id: "sub1", role: "dev", status: "running", isRunning: true, activeTokens: 15000, cumulativeTokens: 40000 },
+    { index: 2, id: "sub2", role: "code-reviewer", status: "idle", isRunning: false, activeTokens: 8000, cumulativeTokens: 22000 }
+  ];
+
+  // Colors disabled for clear string comparison
+  const lineNoColor = renderSubagentLine(stats, 120, false);
+  assert.equal(lineNoColor, "[◆ 2.2k/45k] [1:dev 15k/40k ●] [2:rev 8k/22k ○]");
+
+  // Colors enabled: check ANSI preservation and visible length parity
+  const lineColored = renderSubagentLine(stats, 120, true);
+  assert.equal(strip(lineColored), "[◆ 2.2k/45k] [1:dev 15k/40k ●] [2:rev 8k/22k ○]");
+  assert.equal(visibleLen(lineColored), visibleLen(lineNoColor));
+  assert.match(lineColored, /\x1b\[36m\[◆ 2.2k\/45k\]\x1b\[0m/); // Cyan root badge
+  assert.match(lineColored, /●/); // Running green dot
+  assert.match(lineColored, /○/); // Dimmed idle circle
+});
+
+test("renderSubagentLine responsive degradation tiers under narrow widths", () => {
+  const stats: AgentTokenStats[] = [
+    { index: 0, id: "root", role: "root", status: "idle", isRunning: false, activeTokens: 2200, cumulativeTokens: 45000 },
+    { index: 1, id: "sub1", role: "dev", status: "running", isRunning: true, activeTokens: 15000, cumulativeTokens: 40000 },
+    { index: 2, id: "sub2", role: "code-reviewer", status: "idle", isRunning: false, activeTokens: 8000, cumulativeTokens: 22000 }
+  ];
+
+  // Tier 1 (Full): visible length is 49 chars -> fits in width 50
+  const tier1 = renderSubagentLine(stats, 50, false);
+  assert.equal(tier1, "[◆ 2.2k/45k] [1:dev 15k/40k ●] [2:rev 8k/22k ○]");
+
+  // Tier 2 (Compact Roles): when width is 45, Tier 1 doesn't fit, Tier 2 does:
+  // "[◆ 2.2k/45k] [1:15k/40k ●] [2:8k/22k ○]" (41 chars)
+  const tier2 = renderSubagentLine(stats, 45, false);
+  assert.equal(tier2, "[◆ 2.2k/45k] [1:15k/40k ●] [2:8k/22k ○]");
+
+  // Tier 3 (Active Priority): width 38 -> Tier 2 (41) doesn't fit
+  const tier3 = renderSubagentLine(stats, 38, false);
+  assert.match(tier3, /\[\+1 idle\]/);
+  assert.ok(visibleLen(tier3) <= 38);
+
+  // Tier 4 (Ultra-narrow): width 24 -> "[◆ 2.2k/45k] [1 active]" (23 chars)
+  const tier4 = renderSubagentLine(stats, 24, false);
+  assert.equal(tier4, "[◆ 2.2k/45k] [1 active]");
+  assert.ok(visibleLen(tier4) <= 24);
+
+  // Strict boundary check: all widths between 10 and 100 must never exceed width
+  for (let w = 10; w <= 100; w++) {
+    const rendered = renderSubagentLine(stats, w, true);
+    assert.ok(visibleLen(rendered) <= w, `Overflow at width ${w}: "${strip(rendered)}"`);
+  }
+});
+
+test("dynamic multiline lifecycle transitions between subagent badges and quota line", () => {
+  const payload = fixturePayload();
+  const subagentRunning: SubagentTrackerResult = {
+    hasActiveSubagents: true,
+    agents: [
+      { index: 0, id: "root", role: "root", status: "thinking", isRunning: false, activeTokens: 2200, cumulativeTokens: 45000 },
+      { index: 1, id: "sub1", role: "dev", status: "running", isRunning: true, activeTokens: 15000, cumulativeTokens: 40000 }
+    ]
+  };
+
+  const subagentsCompleted: SubagentTrackerResult = {
+    hasActiveSubagents: false,
+    agents: [
+      { index: 0, id: "root", role: "root", status: "idle", isRunning: false, activeTokens: 2200, cumulativeTokens: 45000 },
+      { index: 1, id: "sub1", role: "dev", status: "idle", isRunning: false, activeTokens: 15000, cumulativeTokens: 40000 }
+    ]
+  };
+
+  // Phase 1: Subagent running -> Line 2 dynamically displays subagent badges
+  const outRunning = render(payload, {
+    config: { ...defaultConfig(), multiline: true, color: false },
+    gitBranch: "main",
+    subagents: subagentRunning
+  });
+  const linesRunning = outRunning.split("\n");
+  assert.equal(linesRunning.length, 2);
+  assert.match(linesRunning[1], /\[◆ 2\.2k\/45k\]/);
+  assert.match(linesRunning[1], /\[1:dev 15k\/40k ●\]/);
+  assert.doesNotMatch(linesRunning[1], /Ctx/);
+
+  // Phase 2: All subagents completed -> Line 2 automatically transitions back to Ctx / Quota line
+  const outCompleted = render(payload, {
+    config: { ...defaultConfig(), multiline: true, color: false },
+    gitBranch: "main",
+    subagents: subagentsCompleted
+  });
+  const linesCompleted = outCompleted.split("\n");
+  assert.equal(linesCompleted.length, 2);
+  assert.match(linesCompleted[1], /Ctx/);
+  assert.doesNotMatch(linesCompleted[1], /\[◆/);
+
+  // Phase 3: showSubagents disabled in config -> Always renders Ctx line even if subagent is running
+  const outDisabled = render(payload, {
+    config: { ...defaultConfig(), multiline: true, color: false, showSubagents: false },
+    gitBranch: "main",
+    subagents: subagentRunning
+  });
+  const linesDisabled = outDisabled.split("\n");
+  assert.match(linesDisabled[1], /Ctx/);
+  assert.doesNotMatch(linesDisabled[1], /\[◆/);
+});
+
+test("single-line mode integrates compact subagent badge when active", () => {
+  const payload = { ...fixturePayload(), terminal_width: 100 };
+  const subagentRunning: SubagentTrackerResult = {
+    hasActiveSubagents: true,
+    agents: [
+      { index: 0, id: "root", role: "root", status: "thinking", isRunning: false, activeTokens: 2200, cumulativeTokens: 45000 },
+      { index: 1, id: "sub1", role: "dev", status: "running", isRunning: true, activeTokens: 15000, cumulativeTokens: 40000 }
+    ]
+  };
+
+  const outSingle = render(payload, {
+    config: { ...defaultConfig(), multiline: false, color: false },
+    gitBranch: "main",
+    subagents: subagentRunning
+  });
+
+  assert.doesNotMatch(outSingle, /\n/);
+  assert.match(outSingle, /\[1:dev ●\]/);
+  assert.ok(visibleLen(outSingle) <= 100);
+});
+
