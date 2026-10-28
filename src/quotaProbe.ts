@@ -319,13 +319,13 @@ function defaultRuntime(): ProbeRuntime {
       if (isWin) {
         return windowsPs();
       }
-      return execFileSync("ps", ["aux"], { encoding: "utf8", windowsHide: true });
+      return execFileSync("ps", ["aux"], { encoding: "utf8", windowsHide: true, shell: false });
     },
     lsof: (pid: string) => {
       if (isWin) {
         return windowsLsof(pid);
       }
-      return execFileSync("lsof", ["-nP", "-iTCP", "-a", "-p", pid], { encoding: "utf8", windowsHide: true });
+      return execFileSync("lsof", ["-nP", "-iTCP", "-a", "-p", pid], { encoding: "utf8", windowsHide: true, shell: false });
     },
     request: queryLanguageServer,
     now: () => new Date(),
@@ -335,7 +335,7 @@ function defaultRuntime(): ProbeRuntime {
         return null;
       }
       const identity = execFileSync("ps", ["-p", pid, "-o", "lstart=", "-o", "comm="], {
-        encoding: "utf8", timeout: 1000, env: { ...process.env, LC_ALL: "C" }, windowsHide: true
+        encoding: "utf8", timeout: 1000, env: { ...process.env, LC_ALL: "C" }, windowsHide: true, shell: false
       }).trim();
       const match = identity.match(/^\w{3}\s+\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4}\s+(.+)$/);
       return match && path.basename(match[1]) === "agy" ? identity : null;
@@ -354,6 +354,7 @@ function windowsPs(): string {
     const cimOut = execFileSync("powershell", ["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script], {
       encoding: "utf8",
       windowsHide: true,
+      shell: false,
       stdio: ["ignore", "pipe", "ignore"]
     });
     const lines: string[] = [];
@@ -398,7 +399,7 @@ function windowsPs(): string {
 
 function windowsLsof(pid: string): string {
   try {
-    const netstat = execFileSync("netstat", ["-ano"], { encoding: "utf8", windowsHide: true });
+    const netstat = execFileSync("netstat", ["-ano"], { encoding: "utf8", windowsHide: true, shell: false });
     const lines = netstat.split(/\r?\n/).filter(line => {
       const trimmed = line.trim();
       const parts = trimmed.split(/\s+/);

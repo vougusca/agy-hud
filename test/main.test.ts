@@ -15,7 +15,7 @@ import {
   runCli,
   version
 } from "../src/main";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 
 function withEnv(overrides: Record<string, string | undefined>, run: () => void): void {
   const saved: Record<string, string | undefined> = {};
@@ -1177,4 +1177,75 @@ test("doctorDepsFromEnv reads the real environment without throwing", () => {
   assert.ok(deps.configPaths.length > 0);
   assert.deepEqual(deps.listDir("/definitely/not/a/font/dir"), []);
   assert.equal(deps.readFile("/definitely/not/a/file.json"), null);
+});
+
+test("statusline falls back immediately to cached quota when pre-render refresh times out", async () => {
+  const fixture = homeFixture();
+  writeCache(fixture.writePath, 0.4, 10_000);
+  writeRefreshState(fixture.writePath, "working");
+
+  const out = await runInHome(fixture, async () => {
+    let captured = "";
+    await runCli(["statusline"], {
+      stdin: Readable.from([statuslinePayload("idle")]),
+      stdout: chunk => {
+        captured += chunk;
+      },
+      stderr: () => {},
+      preRenderTimeoutMs: 20,
+      refreshQuota: async (cachePath: string) => {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        writeCache(cachePath, 0.1, 0);
+        return { ok: true, message: "refreshed" };
+      }
+    });
+    return strip(captured);
+  });
+
+  assert.match(out, /40\.(?:0%|00% left)/, "the HUD must render cached quota immediately upon preRenderTimeout");
+  assert.equal(await waitForSpawn(fixture.markerPath), true, "background refresh is triggered after preRenderTimeout");
+});
+
+test("runCli statusline streams input from Readable.from as used by multiplex hook", async () => {
+  const payload = JSON.stringify({
+    conversation_id: "conv-stream-1",
+    model: { display_name: "Claude Sonnet 3.5" },
+    context_window: { used_percentage: 42 },
+    agent_state: "idle",
+    plan_tier: "Google AI Pro",
+    terminal_width: 100
+  });
+
+  let output = "";
+  const code = await runCli(["statusline"], {
+    stdin: Readable.from([payload]),
+    stdout: chunk => {
+      output += chunk;
+    },
+    stderr: () => {}
+  });
+
+  assert.equal(code, 0);
+  assert.match(output, /Sonnet/);
+});
+
+test("hooks/multiplex-hud.js stdin guards exit cleanly with status 0 on invalid inputs", () => {
+  const hookPath = fs.existsSync(path.resolve(__dirname, "..", "hooks", "multiplex-hud.js"))
+    ? path.resolve(__dirname, "..", "hooks", "multiplex-hud.js")
+    : path.resolve(__dirname, "..", "..", "hooks", "multiplex-hud.js");
+  const badInputs = ["", "null", "123", "[]", "not-json"];
+
+  for (const input of badInputs) {
+    const res = spawnSync(process.execPath, [hookPath], {
+      input,
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 3000
+    });
+    assert.equal(
+      res.status,
+      0,
+      `input ${JSON.stringify(input)} must exit with status code 0 (got status ${res.status}, stderr: ${res.stderr})`
+    );
+  }
 });

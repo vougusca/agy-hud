@@ -1,10 +1,19 @@
 const fs = require('node:fs');
 const { spawnSync } = require('node:child_process');
+const { Readable } = require('node:stream');
 const path = require('node:path');
 const os = require('node:os');
 
 // Read the JSON payload from stdin
-const rawPayload = fs.readFileSync(0, 'utf-8');
+let rawPayload;
+try {
+  rawPayload = fs.readFileSync(0, 'utf-8');
+  if (!rawPayload || !rawPayload.trim()) {
+    process.exit(0);
+  }
+} catch (e) {
+  process.exit(0);
+}
 
 // Log the payload to a file for inspection
 // const logPath = path.join(__dirname, 'multiplex-payloads.log');
@@ -28,6 +37,10 @@ let payload;
 try {
   payload = JSON.parse(rawPayload);
 } catch (e) {
+  process.exit(0);
+}
+
+if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
   process.exit(0);
 }
 
@@ -100,19 +113,67 @@ const activeTip = tips[Math.floor(Date.now() / 6000) % tips.length];
 // Assemble final top line
 const defaultLine = parts.join(' | ');
 
-// 3. Call the agy-hud plugin
+// 3. Call the agy-hud plugin (~45ms in-process module execution, avoiding ~270ms nested Node VM spawn overhead)
 const hudPath = path.join(__dirname, '..', 'dist', 'agy-hud.js');
-const result = spawnSync('node', [hudPath, 'statusline'], {
-  input: rawPayload,
-  encoding: 'utf-8',
-  windowsHide: true
-});
 
-// 4. Print default status line, tip on next line, then agy-hud output
-if (defaultLine) {
-  console.log(defaultLine);
+async function renderHud() {
+  if (defaultLine) {
+    console.log(defaultLine);
+  }
+
+  let hudModule;
+  try {
+    hudModule = require(hudPath);
+  } catch {
+    // If requiring dist/agy-hud.js failed (e.g. module load error), attempt fallback to CLI spawn
+    try {
+      const result = spawnSync(process.execPath || 'node', [hudPath, 'statusline'], {
+        input: rawPayload,
+        encoding: 'utf-8',
+        windowsHide: true,
+        timeout: 1500
+      });
+      if (result && result.stdout) {
+        process.stdout.write(result.stdout);
+      }
+    } catch {
+      // Graceful degradation
+    }
+    return;
+  }
+
+  if (hudModule && typeof hudModule.runCli === 'function') {
+    try {
+      let hudOutput = '';
+      let timer;
+      const timeoutPromise = new Promise(resolve => {
+        timer = setTimeout(() => resolve(), 1500);
+        if (timer.unref) {
+          timer.unref();
+        }
+      });
+
+      const cliPromise = hudModule.runCli(['statusline'], {
+        stdin: Readable.from([rawPayload]),
+        stdout: chunk => {
+          hudOutput += chunk;
+        },
+        stderr: () => {}
+      });
+
+      await Promise.race([cliPromise, timeoutPromise]);
+      if (timer) {
+        clearTimeout(timer);
+      }
+      if (hudOutput) {
+        process.stdout.write(hudOutput);
+      }
+    } catch {
+      // Graceful degradation if in-process statusline throws
+    }
+  }
 }
-// console.log(`\x1b[90m${activeTip}\x1b[0m`);
-if (result.stdout) {
-  process.stdout.write(result.stdout);
-}
+
+renderHud()
+  .then(() => process.exit(0))
+  .catch(() => process.exit(0));

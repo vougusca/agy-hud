@@ -234,6 +234,7 @@ interface CliDeps {
   stderr?: WriteFn;
   refreshQuota?: (cachePath: string) => Promise<RefreshResult>;
   doctorDeps?: Partial<DoctorDeps>;
+  preRenderTimeoutMs?: number;
 }
 
 function usage(write: WriteFn): void {
@@ -308,7 +309,8 @@ export async function runCli(args: string[], deps: CliDeps = {}): Promise<number
       cachePath,
       ok ? cache : null,
       payload,
-      deps.refreshQuota ?? refreshQuota
+      deps.refreshQuota ?? refreshQuota,
+      deps.preRenderTimeoutMs ?? 1200
     );
     // A same-frame refresh already rewrote the write path, so a corrupt primary is repaired by now.
     // Passing the stale flag on would spawn a second probe for damage that no longer exists.
@@ -394,13 +396,27 @@ async function refreshQuotaBeforeRenderIfNeeded(
   cachePath: string,
   cache: Cache | null,
   payload: Payload | null,
-  refresh: (cachePath: string) => Promise<RefreshResult>
+  refresh: (cachePath: string) => Promise<RefreshResult>,
+  timeoutMs = 1200
 ): Promise<[Cache | null, boolean]> {
   if (!shouldRefreshBeforeRender(cachePath, payload, new Date())) {
     return [cache, false];
   }
   try {
-    const result = await refresh(cachePath);
+    let timer: NodeJS.Timeout | null = null;
+    const timeoutPromise = new Promise<RefreshResult>(resolve => {
+      timer = setTimeout(() => {
+        resolve({ ok: false, message: "pre-render refresh timed out" });
+      }, timeoutMs);
+      if (timer.unref) {
+        timer.unref();
+      }
+    });
+
+    const result = await Promise.race([refresh(cachePath), timeoutPromise]);
+    if (timer) {
+      clearTimeout(timer);
+    }
     if (!result.ok) {
       return [cache, false];
     }

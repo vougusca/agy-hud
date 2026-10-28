@@ -530,13 +530,13 @@ function defaultRuntime() {
       if (isWin) {
         return windowsPs();
       }
-      return (0, import_node_child_process.execFileSync)("ps", ["aux"], { encoding: "utf8", windowsHide: true });
+      return (0, import_node_child_process.execFileSync)("ps", ["aux"], { encoding: "utf8", windowsHide: true, shell: false });
     },
     lsof: (pid) => {
       if (isWin) {
         return windowsLsof(pid);
       }
-      return (0, import_node_child_process.execFileSync)("lsof", ["-nP", "-iTCP", "-a", "-p", pid], { encoding: "utf8", windowsHide: true });
+      return (0, import_node_child_process.execFileSync)("lsof", ["-nP", "-iTCP", "-a", "-p", pid], { encoding: "utf8", windowsHide: true, shell: false });
     },
     request: queryLanguageServer,
     now: () => /* @__PURE__ */ new Date(),
@@ -549,7 +549,8 @@ function defaultRuntime() {
         encoding: "utf8",
         timeout: 1e3,
         env: { ...process.env, LC_ALL: "C" },
-        windowsHide: true
+        windowsHide: true,
+        shell: false
       }).trim();
       const match = identity.match(/^\w{3}\s+\w{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4}\s+(.+)$/);
       return match && import_node_path.default.basename(match[1]) === "agy" ? identity : null;
@@ -566,6 +567,7 @@ function windowsPs() {
     const cimOut = (0, import_node_child_process.execFileSync)("powershell", ["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script], {
       encoding: "utf8",
       windowsHide: true,
+      shell: false,
       stdio: ["ignore", "pipe", "ignore"]
     });
     const lines = [];
@@ -609,7 +611,7 @@ function windowsPs() {
 }
 function windowsLsof(pid) {
   try {
-    const netstat = (0, import_node_child_process.execFileSync)("netstat", ["-ano"], { encoding: "utf8", windowsHide: true });
+    const netstat = (0, import_node_child_process.execFileSync)("netstat", ["-ano"], { encoding: "utf8", windowsHide: true, shell: false });
     const lines = netstat.split(/\r?\n/).filter((line) => {
       const trimmed = line.trim();
       const parts = trimmed.split(/\s+/);
@@ -2788,7 +2790,8 @@ async function runCli(args, deps = {}) {
       cachePath,
       ok ? cache : null,
       payload,
-      deps.refreshQuota ?? refreshQuota
+      deps.refreshQuota ?? refreshQuota,
+      deps.preRenderTimeoutMs ?? 1200
     );
     triggerBackgroundRefreshIfNeeded(cachePath, displayCache, payload, primaryUnloadable && !refreshed);
     let subagents = null;
@@ -2864,12 +2867,24 @@ function readStdin(stdin) {
     });
   });
 }
-async function refreshQuotaBeforeRenderIfNeeded(cachePath, cache, payload, refresh) {
+async function refreshQuotaBeforeRenderIfNeeded(cachePath, cache, payload, refresh, timeoutMs = 1200) {
   if (!shouldRefreshBeforeRender(cachePath, payload, /* @__PURE__ */ new Date())) {
     return [cache, false];
   }
   try {
-    const result = await refresh(cachePath);
+    let timer = null;
+    const timeoutPromise = new Promise((resolve) => {
+      timer = setTimeout(() => {
+        resolve({ ok: false, message: "pre-render refresh timed out" });
+      }, timeoutMs);
+      if (timer.unref) {
+        timer.unref();
+      }
+    });
+    const result = await Promise.race([refresh(cachePath), timeoutPromise]);
+    if (timer) {
+      clearTimeout(timer);
+    }
     if (!result.ok) {
       return [cache, false];
     }

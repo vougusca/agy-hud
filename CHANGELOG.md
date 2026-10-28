@@ -14,6 +14,9 @@
 - Prevent erroneous plain HTTP fallbacks against HTTPS endpoints when unauthenticated or rejected by server.
 - Suppress visible Windows console window flashes by adding `windowsHide: true` to background detached spawns and `-WindowStyle Hidden` to PowerShell discovery.
 - Respect `statusLine.enabled: false` in `hooks/multiplex-hud.js` and use `os.homedir()`.
+- Bound pre-render quota refresh with 1200ms `preRenderTimeoutMs` fallback race to prevent statusline rendering delays when probes hang.
+- Separate module loading from `runCli` execution in `hooks/multiplex-hud.js` and harden stdin guard exits.
+- Harden all `execFileSync` subprocess invocations in `src/quotaProbe.ts` with explicit `shell: false`.
 
 ## 0.1.10 — 2026-09-04
 
